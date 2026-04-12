@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AI-Study Companion</title>
+  <link rel="stylesheet" href="sidepanel.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Manrope:wght@600;800&display=swap" rel="stylesheet">
+</head>
+<body>
+
+  <!-- Header + Capture -->
+  <div class="panel-header">
+    <div class="header-top">
+      <div>
+        <div class="app-name">✦ AI-Study Companion</div>
+        <div id="lesson-url">Click capture to start</div>
+      </div>
+      <button id="capture-btn" class="capture-btn">
+        ✨ Capture
+      </button>
+    </div>
+    <div id="capture-status" class="capture-status"></div>
+  </div>
+
+  <!-- Lesson title (only when a lesson is loaded) -->
+  <div id="lesson-header" class="lesson-header" style="display:none;">
+    <h1 id="lesson-title"></h1>
+  </div>
+
+  <!-- Tabs -->
+  <div class="tabs">
+    <div class="tab active" data-tab="chat">💬 Chat</div>
+    <div class="tab" data-tab="content">📄 Content</div>
+    <div class="tab" data-tab="audio">🎙 Audio</div>
+    <div class="tab" data-tab="export">⬇ Export</div>
+  </div>
+
+  <!-- Tab Panels -->
+  <div id="content-container" class="main-content">
+
+    <!-- CHAT TAB -->
+    <div id="chat-panel" class="tab-panel">
+      <div id="chat-messages" style="display:flex;flex-direction:column;gap:8px;">
+        <div class="ai-bubble">
+          👋 Capture any webpage, then ask me anything about it!
+        </div>
+      </div>
+    </div>
+
+    <!-- CONTENT TAB -->
+    <div id="content-panel" class="tab-panel" style="display:none;">
+      <div id="lesson-text" style="line-height:1.65;font-size:0.88rem;color:var(--text-primary);">
+        <p style="color:var(--text-dim);">Nothing captured yet. Click ✨ Capture above.</p>
+      </div>
+    </div>
+
+    <!-- AUDIO TAB -->
+    <div id="audio-panel" class="tab-panel" style="display:none;">
+      <h2 style="font-family:var(--font-display);margin-bottom:1rem;font-size:1rem;">Audio Narration</h2>
+
+      <label style="font-size:0.78rem;color:var(--text-dim);display:block;margin-bottom:6px;">
+        Speed: <span id="rate-label">0.92×</span>
+      </label>
+      <input type="range" id="rate-slider" min="0.5" max="1.5" step="0.05" value="0.92"
+        style="width:100%;accent-color:#a9a4ff;margin-bottom:1.2rem;">
+
+      <div id="waveform" style="height:32px;background:var(--surface-highest);border-radius:8px;margin-bottom:1rem;position:relative;overflow:hidden;">
+        <div id="waveform-progress" style="position:absolute;left:0;top:0;bottom:0;background:var(--primary-glow);opacity:0.35;width:0%;transition:width 0.3s;"></div>
+      </div>
+      <button id="play-btn" class="glass action-btn">▶ Play Narration</button>
+      <div id="voice-status" style="margin-top:8px;font-size:0.72rem;color:var(--text-dim);text-align:center;"></div>
+    </div>
+
+    <!-- EXPORT TAB -->
+    <div id="export-panel" class="tab-panel" style="display:none;">
+      <h2 style="font-family:var(--font-display);margin-bottom:0.5rem;font-size:1rem;">Export PDF</h2>
+      <p style="color:var(--text-dim);font-size:0.82rem;margin-bottom:1.2rem;">Export the currently captured page as a clean PDF.</p>
+      <div id="export-info" style="background:var(--surface-highest);border-radius:10px;padding:11px;margin-bottom:1rem;font-size:0.8rem;color:var(--text-dim);">
+        No lesson captured yet.
+      </div>
+      <button id="export-pdf" class="glass action-btn">⬇ Download PDF</button>
+    </div>
+
+  </div>
+
+  <!-- Chat input -->
+  <div class="chat-container">
+    <input type="text" id="chat-input" class="chat-input" placeholder="Ask about the captured content…">
+  </div>
+
+  <script src="../libs/jspdf.umd.min.js"></script>
+  <script src="sidepanel.js"></script>
+</body>
+</html>

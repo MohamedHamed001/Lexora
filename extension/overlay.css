@@ -1,0 +1,15 @@
+/* overlay.css */
+.ai-study-btn {
+  font-family: 'Inter', sans-serif !important;
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1) !important;
+}
+
+.ai-study-btn.glass {
+  background: rgba(169, 164, 255, 0.2);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+}
+
+.ai-study-btn:active {
+  transform: scale(0.95);
+}
