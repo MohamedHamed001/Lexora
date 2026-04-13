@@ -1,6 +1,7 @@
 // background.js
+const browserAPI = typeof browser !== 'undefined' ? browser : chrome;
 
-chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+browserAPI.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
   // ── LM Studio proxy ──────────────────────────────────────────────────────
   if (request.action === 'proxyFetch') {
@@ -17,14 +18,14 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
   // ── Capture: triggered from the overlay or button ────────────────────────
   if (request.action === 'triggerDeepCapture') {
-    chrome.tabs.query({ active: true, currentWindow: true }, tabs => {
+    browserAPI.tabs.query({ active: true, currentWindow: true }, tabs => {
       const tab = tabs[0];
       if (!tab) {
         sendResponse({ success: false, error: 'No active tab' });
         return;
       }
 
-      chrome.scripting.executeScript(
+      browserAPI.scripting.executeScript(
         {
           target: { tabId: tab.id, allFrames: true },
           func: () => {
@@ -60,7 +61,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
           },
         },
         results => {
-          if (chrome.runtime.lastError) {
+          if (browserAPI.runtime.lastError) {
             sendResponse({ success: false, error: chrome.runtime.lastError.message });
             return;
           }
@@ -70,14 +71,14 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
           if (!valid.length) {
             sendResponse({ success: false, error: 'No content found on this page.' });
-            chrome.tabs.sendMessage(tab.id, { action: 'captureFinished', success: false });
+            browserAPI.tabs.sendMessage(tab.id, { action: 'captureFinished', success: false });
             return;
           }
 
           const best = valid.reduce((a, b) => a.content.length >= b.content.length ? a : b);
-          chrome.storage.local.set({ currentLesson: best });
+          browserAPI.storage.local.set({ currentLesson: best });
           sendResponse({ success: true, data: best });
-          chrome.tabs.sendMessage(tab.id, { action: 'captureFinished', success: true });
+          browserAPI.tabs.sendMessage(tab.id, { action: 'captureFinished', success: true });
         }
       );
     });
@@ -86,14 +87,14 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 });
 
 // ── Action Click: Toggle Overlay ────────────────────────────────────────────
-chrome.action.onClicked.addListener((tab) => {
-  chrome.tabs.sendMessage(tab.id, { action: 'toggleOverlay' }).catch(() => {
+browserAPI.action.onClicked.addListener((tab) => {
+  browserAPI.tabs.sendMessage(tab.id, { action: 'toggleOverlay' }).catch(() => {
     // Content script might not be loaded yet, try injecting manually
-    chrome.scripting.executeScript({
+    browserAPI.scripting.executeScript({
       target: { tabId: tab.id },
       files: ['content.js']
     }).then(() => {
-      chrome.tabs.sendMessage(tab.id, { action: 'toggleOverlay' });
+      browserAPI.tabs.sendMessage(tab.id, { action: 'toggleOverlay' });
     });
   });
 });

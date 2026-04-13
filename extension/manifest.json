@@ -40,5 +40,16 @@
       ],
       "matches": ["<all_urls>"]
     }
-  ]
+  ],
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "lexora-companion@hamed.ai",
+      "strict_min_version": "109.0"
+    }
+  },
+  "sidebar_action": {
+    "default_panel": "sidepanel/sidepanel.html",
+    "default_title": "Lexora Study Companion",
+    "default_icon": "icons/icon48.png"
+  }
 }

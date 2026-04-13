@@ -1,4 +1,5 @@
 // sidepanel.js — Lexora Neural Edition
+const browserAPI = typeof browser !== 'undefined' ? browser : chrome;
 
 let currentLesson = null;
 let config = {
@@ -44,12 +45,12 @@ captureBtn.addEventListener('click', () => {
   captureBtn.disabled      = true;
   captureStatus.textContent = '';
 
-  chrome.runtime.sendMessage({ action: 'triggerDeepCapture' }, resp => {
+  browserAPI.runtime.sendMessage({ action: 'triggerDeepCapture' }, resp => {
     captureBtn.disabled = false;
 
     if (resp && resp.success) {
       currentLesson = resp.data;
-      chrome.storage.local.set({ currentLesson });
+      browserAPI.storage.local.set({ currentLesson });
       applyLesson(currentLesson);
       captureBtn.textContent    = '✅ Captured';
       captureStatus.textContent = '';
@@ -138,7 +139,7 @@ document.getElementById('chat-input').addEventListener('keypress', e => {
   if (config.key) headers['Authorization'] = `Bearer ${config.key}`;
 
   const thinking = addBubble('ai', '…');
-  chrome.runtime.sendMessage({
+  browserAPI.runtime.sendMessage({
     action: 'proxyFetch',
     url:    config.url,
     method: 'POST',
@@ -331,8 +332,8 @@ async function loadNeuralModel() {
   logDebug('Loading Neural Model...');
   
   try {
-    const modelUrl = chrome.runtime.getURL('sidepanel/amy-low.onnx');
-    const configUrl = chrome.runtime.getURL('sidepanel/amy-low.onnx.json');
+    const modelUrl = browserAPI.runtime.getURL('sidepanel/amy-low.onnx');
+    const configUrl = browserAPI.runtime.getURL('sidepanel/amy-low.onnx.json');
     
     logDebug('Fetching model and config assets...');
     const [modelResp, configResp] = await Promise.all([
@@ -347,7 +348,7 @@ async function loadNeuralModel() {
     
     logDebug(`Assets loaded. Model size: ${(modelBuffer.byteLength / 1024 / 1024).toFixed(2)}MB`);
     
-    neuralWorker = new Worker(chrome.runtime.getURL('sidepanel/piper-worker.js'));
+    neuralWorker = new Worker(browserAPI.runtime.getURL('sidepanel/piper-worker.js'));
     
     return new Promise((resolve, reject) => {
       neuralWorker.onmessage = (e) => {
@@ -636,7 +637,7 @@ document.getElementById('export-pdf').addEventListener('click', () => {
 });
 
 // ── Settings ─────────────────────────────────────────────────────────────────
-chrome.storage.local.get(['currentLesson', 'lexoraConfig'], res => {
+browserAPI.storage.local.get(['currentLesson', 'lexoraConfig'], res => {
   if (res.currentLesson) {
     currentLesson = res.currentLesson;
     applyLesson(currentLesson);
@@ -656,7 +657,7 @@ document.getElementById('save-settings-btn').addEventListener('click', () => {
   config.model = document.getElementById('setting-model').value.trim();
   config.key = document.getElementById('setting-key').value.trim();
   config.ttsKey = document.getElementById('setting-tts-key').value.trim();
-  chrome.storage.local.set({ lexoraConfig: config }, () => {
+  browserAPI.storage.local.set({ lexoraConfig: config }, () => {
     const status = document.getElementById('settings-status');
     status.textContent = '✅ Config Saved';
     initVoice();

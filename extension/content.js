@@ -4,6 +4,8 @@
 (function () {
   'use strict';
 
+  const browserAPI = typeof browser !== 'undefined' ? browser : chrome;
+
   const BTN_ID    = 'ai-study-companion-btn';
   const BTN_COLOR = 'rgba(109, 40, 217, 0.92)';
 
@@ -177,7 +179,7 @@
       }
       toggleOverlay(false); 
       setTimeout(() => {
-        if (overlayIframe) overlayIframe.src = chrome.runtime.getURL('sidepanel/sidepanel.html');
+        if (overlayIframe) overlayIframe.src = browserAPI.runtime.getURL('sidepanel/sidepanel.html');
       }, 500);
     };
 
@@ -188,7 +190,7 @@
     header.appendChild(controls);
 
     overlayIframe = document.createElement('iframe');
-    overlayIframe.src = chrome.runtime.getURL('sidepanel/sidepanel.html');
+    overlayIframe.src = browserAPI.runtime.getURL('sidepanel/sidepanel.html');
     overlayIframe.allow = "autoplay; clipboard-write";
 
     // ── Drag Logic ──────────────────────────────────────────────────────────
@@ -281,7 +283,7 @@
   }
 
   // ── Listen for messages ──────────────────────────────────────────────────
-  chrome.runtime.onMessage.addListener((msg) => {
+  browserAPI.runtime.onMessage.addListener((msg) => {
     if (msg.action === 'captureFinished' && overlayHost) {
       // Forward to iframe if needed, or handle locally
     } else if (msg.action === 'toggleOverlay') {
