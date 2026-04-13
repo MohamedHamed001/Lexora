@@ -31,8 +31,8 @@ body {
   background-color: var(--bg-color);
   color: var(--text-color);
   font-family: var(--font-body);
-  width: 100%;
-  height: 100vh;
+  width: 420px; /* Fixed width for popup consistency */
+  height: 600px; /* Fixed height for popup context */
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -158,6 +158,30 @@ body {
   align-items: center;
   justify-content: space-between;
   gap: 8px;
+}
+.header-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.icon-btn {
+  background: var(--surface-high);
+  border: 1px solid var(--outline-variant);
+  color: var(--text-color);
+  width: 34px;
+  height: 34px;
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  font-size: 1.1rem;
+  transition: all 0.2s ease;
+}
+.icon-btn:hover {
+  background: var(--surface-highest);
+  border-color: var(--primary-glow);
+  transform: translateY(-2px);
 }
 .app-name {
   font-family: var(--font-display);

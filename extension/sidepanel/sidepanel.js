@@ -39,6 +39,25 @@ document.querySelectorAll('.tab').forEach(tab => {
 // ── Capture button ─────────────────────────────────────────────────────────
 const captureBtn    = document.getElementById('capture-btn');
 const captureStatus = document.getElementById('capture-status');
+const popOutBtn     = document.getElementById('pop-out-btn');
+
+if (popOutBtn) {
+  // Hide the pop-out button if we are already in the overlay iframe
+  if (window.parent !== window) {
+    popOutBtn.style.display = 'none';
+  }
+
+  popOutBtn.addEventListener('click', () => {
+    browserAPI.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+      if (tabs[0]) {
+        // Toggle the draggable overlay in the active tab
+        browserAPI.tabs.sendMessage(tabs[0].id, { action: 'toggleOverlay' });
+        // Close the popup window
+        window.close();
+      }
+    });
+  });
+}
 
 captureBtn.addEventListener('click', () => {
   captureBtn.textContent   = '⏳ Scanning…';
