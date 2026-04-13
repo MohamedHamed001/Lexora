@@ -15,9 +15,8 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     return true;
   }
 
-  // ── Capture: triggered from the popup button ──────────────────────────────
+  // ── Capture: triggered from the overlay or button ────────────────────────
   if (request.action === 'triggerDeepCapture') {
-    // The sender is the popup, so we query the active tab ourselves
     chrome.tabs.query({ active: true, currentWindow: true }, tabs => {
       const tab = tabs[0];
       if (!tab) {
@@ -71,15 +70,30 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
           if (!valid.length) {
             sendResponse({ success: false, error: 'No content found on this page.' });
+            chrome.tabs.sendMessage(tab.id, { action: 'captureFinished', success: false });
             return;
           }
 
           const best = valid.reduce((a, b) => a.content.length >= b.content.length ? a : b);
           chrome.storage.local.set({ currentLesson: best });
           sendResponse({ success: true, data: best });
+          chrome.tabs.sendMessage(tab.id, { action: 'captureFinished', success: true });
         }
       );
     });
     return true; // async
   }
+});
+
+// ── Action Click: Toggle Overlay ────────────────────────────────────────────
+chrome.action.onClicked.addListener((tab) => {
+  chrome.tabs.sendMessage(tab.id, { action: 'toggleOverlay' }).catch(() => {
+    // Content script might not be loaded yet, try injecting manually
+    chrome.scripting.executeScript({
+      target: { tabId: tab.id },
+      files: ['content.js']
+    }).then(() => {
+      chrome.tabs.sendMessage(tab.id, { action: 'toggleOverlay' });
+    });
+  });
 });

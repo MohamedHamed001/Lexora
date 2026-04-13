@@ -15,7 +15,6 @@
   },
   "action": {
     "default_title": "AI-Study Companion",
-    "default_popup": "sidepanel/sidepanel.html",
     "default_icon": {
       "48": "icons/icon48.png",
       "128": "icons/icon128.png"
@@ -24,5 +23,22 @@
   "icons": {
     "48": "icons/icon48.png",
     "128": "icons/icon128.png"
-  }
+  },
+  "content_security_policy": {
+    "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'"
+  },
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "sidepanel/sidepanel.html",
+        "sidepanel/*.wasm",
+        "sidepanel/*.data",
+        "sidepanel/*.js",
+        "sidepanel/*.onnx",
+        "sidepanel/*.json",
+        "libs/*.js"
+      ],
+      "matches": ["<all_urls>"]
+    }
+  ]
 }

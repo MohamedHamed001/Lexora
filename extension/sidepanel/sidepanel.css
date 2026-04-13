@@ -31,9 +31,8 @@ body {
   background-color: var(--bg-color);
   color: var(--text-color);
   font-family: var(--font-body);
-  width: 420px;
-  height: 600px;
-  min-height: 600px;
+  width: 100%;
+  height: 100vh;
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -176,6 +175,43 @@ body {
   text-overflow: ellipsis;
   max-width: 220px;
 }
+
+/* Seek Slider */
+.seek-slider {
+  -webkit-appearance: none;
+  width: 100%;
+  height: 6px;
+  background: var(--surface-highest);
+  border-radius: 4px;
+  outline: none;
+  margin-bottom: 1rem;
+  transition: background 0.3s;
+}
+
+.seek-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--primary-glow);
+  cursor: pointer;
+  transition: transform 0.1s;
+}
+
+.seek-slider::-webkit-slider-thumb:hover {
+  transform: scale(1.2);
+}
+
+.seek-slider::-moz-range-thumb {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--primary-glow);
+  cursor: pointer;
+  border: none;
+}
+
 .capture-btn {
   flex-shrink: 0;
   padding: 8px 16px;
