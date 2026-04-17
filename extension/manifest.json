@@ -7,7 +7,8 @@
     "activeTab",
     "scripting",
     "storage",
-    "tabs"
+    "tabs",
+    "webNavigation"
   ],
   "host_permissions": ["<all_urls>"],
   "background": {
@@ -33,6 +34,7 @@
       "resources": [
         "sidepanel/sidepanel.html",
         "sidepanel/*.wasm",
+        "sidepanel/*.mjs",
         "sidepanel/*.data",
         "sidepanel/*.js",
         "sidepanel/*.onnx",

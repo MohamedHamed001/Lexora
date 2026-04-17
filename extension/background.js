@@ -16,6 +16,24 @@ browserAPI.runtime.onMessage.addListener((request, sender, sendResponse) => {
     return true;
   }
 
+  // ── Word highlight relay (sidepanel → content script in ALL frames) ─────
+  if (request.action === 'highlightWord' || request.action === 'clearHighlight') {
+    browserAPI.tabs.query({ active: true, currentWindow: true }, tabs => {
+      const tab = tabs[0];
+      if (!tab) return;
+      browserAPI.webNavigation.getAllFrames({ tabId: tab.id }, frames => {
+        if (!frames) {
+          browserAPI.tabs.sendMessage(tab.id, request).catch(() => {});
+          return;
+        }
+        for (const frame of frames) {
+          browserAPI.tabs.sendMessage(tab.id, request, { frameId: frame.frameId }).catch(() => {});
+        }
+      });
+    });
+    return false;
+  }
+
   // ── Capture: triggered from the overlay or button ────────────────────────
   if (request.action === 'triggerDeepCapture') {
     browserAPI.tabs.query({ active: true, currentWindow: true }, tabs => {
@@ -41,9 +59,10 @@ browserAPI.runtime.onMessage.addListener((request, sender, sendResponse) => {
             const blocks = [];
             const seen   = new Set();
             document.querySelectorAll(selectors.join(',')).forEach(el => {
-              if (!el.offsetParent) return;
               if (el.closest('nav,button,header,footer,[role="navigation"]')) return;
-              const txt = el.innerText.replace(/\s+/g,' ').trim();
+              const isVisible = !!el.offsetParent;
+              const txt = (isVisible ? el.innerText : el.textContent)
+                .replace(/\s+/g,' ').trim();
               if (txt.length > 10 && !seen.has(txt)) {
                 seen.add(txt);
                 blocks.push({ tag: el.tagName, text: txt });
@@ -89,9 +108,8 @@ browserAPI.runtime.onMessage.addListener((request, sender, sendResponse) => {
 // ── Action Click: Toggle Overlay ────────────────────────────────────────────
 browserAPI.action.onClicked.addListener((tab) => {
   browserAPI.tabs.sendMessage(tab.id, { action: 'toggleOverlay' }).catch(() => {
-    // Content script might not be loaded yet, try injecting manually
     browserAPI.scripting.executeScript({
-      target: { tabId: tab.id },
+      target: { tabId: tab.id, allFrames: true },
       files: ['content.js']
     }).then(() => {
       browserAPI.tabs.sendMessage(tab.id, { action: 'toggleOverlay' });

@@ -19,6 +19,7 @@
 
   function createOverlay() {
     if (overlayHost) return;
+    if (window !== window.top) return;
 
     overlayHost = document.createElement('div');
     overlayHost.id = 'lexora-overlay-root';
@@ -120,7 +121,7 @@
         align-items: center;
         justify-content: center;
         background: linear-gradient(135deg, #6d28d9 0%, #4f46e5 100%);
-        cursor: pointer;
+        cursor: grab;
         font-size: 24px;
         color: white;
         box-shadow: 0 0 20px rgba(109, 40, 217, 0.5);
@@ -150,7 +151,25 @@
     const gem = document.createElement('div');
     gem.className = 'minimized-gem';
     gem.innerHTML = '✦';
-    gem.onclick = () => setMinimized(false);
+    let gemDragStartPos = null;
+
+    gem.onmousedown = (e) => {
+      gemDragStartPos = { x: e.clientX, y: e.clientY };
+      isDragging = true;
+      const rect = overlayHost.getBoundingClientRect();
+      dragOffset.x = e.clientX - rect.left;
+      dragOffset.y = e.clientY - rect.top;
+      overlayHost.style.transition = 'none';
+      e.preventDefault();
+    };
+
+    gem.onmouseup = (e) => {
+      if (!gemDragStartPos) return;
+      const dx = Math.abs(e.clientX - gemDragStartPos.x);
+      const dy = Math.abs(e.clientY - gemDragStartPos.y);
+      gemDragStartPos = null;
+      if (dx < 5 && dy < 5) setMinimized(false);
+    };
 
     const header = document.createElement('div');
     header.className = 'overlay-header';
@@ -262,6 +281,7 @@
   }
 
   function toggleOverlay(force) {
+    if (window !== window.top) return;
     if (!overlayHost) createOverlay();
     
     const isVisible = overlayHost.style.opacity === '1';
@@ -282,12 +302,232 @@
     }
   }
 
+  // ── Word Highlight System ────────────────────────────────────────────────
+  // Builds a flat word-by-word index of the entire page in document order.
+  // A cursor marches forward through it — guarantees highlights follow
+  // reading order, no jumping, no duplicate-text confusion.
+
+  let highlightStyleInjected = false;
+  let currentChunkText = null;
+
+  // Page word index: [{word, node, start, end}, ...] in document order
+  let pageWords = null;
+  let wordCursor = 0;
+
+  // Currently highlighted span elements (for cleanup)
+  let activeSpans = [];
+
+  function injectHighlightStyles() {
+    if (highlightStyleInjected) return;
+    const s = document.createElement('style');
+    s.id = 'lexora-highlight-styles';
+    s.textContent = `
+      .lexora-hl {
+        transition: background 0.12s ease, box-shadow 0.12s ease;
+        border-radius: 3px;
+      }
+      .lexora-hl-active {
+        background: rgba(109, 40, 217, 0.35) !important;
+        box-shadow: 0 0 8px rgba(109, 40, 217, 0.45);
+        border-radius: 3px;
+        padding: 1px 2px;
+        margin: -1px -2px;
+      }
+    `;
+    document.head.appendChild(s);
+    highlightStyleInjected = true;
+  }
+
+  function buildPageWords() {
+    const words = [];
+    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, {
+      acceptNode(node) {
+        const p = node.parentElement;
+        if (!p) return NodeFilter.FILTER_REJECT;
+        if (p.closest('script,style,noscript,#lexora-overlay-root,iframe,svg,head')) return NodeFilter.FILTER_REJECT;
+        const st = window.getComputedStyle(p);
+        if (st.display === 'none' || st.visibility === 'hidden') return NodeFilter.FILTER_REJECT;
+        return NodeFilter.FILTER_ACCEPT;
+      }
+    });
+    let node;
+    while ((node = walker.nextNode())) {
+      const text = node.textContent;
+      const re = /\S+/g;
+      let m;
+      while ((m = re.exec(text))) {
+        words.push({ word: m[0], node, start: m.index, end: m.index + m[0].length });
+      }
+    }
+    return words;
+  }
+
+  function norm(w) {
+    return w.toLowerCase().replace(/[^\w]/g, '');
+  }
+
+  // Aligns chunk words against page words, returning an array of
+  // {chunkIdx, pageIdx} pairs. Skips page words that don't appear
+  // in the chunk, so only actually-spoken words get highlighted.
+  function alignChunkToPage(chunkWords, startIdx) {
+    const normed = chunkWords.map(norm);
+    const pairs = [];
+    let pi = startIdx;
+
+    for (let ci = 0; ci < normed.length && pi < pageWords.length; ci++) {
+      let found = false;
+      for (let look = 0; look < 15 && pi + look < pageWords.length; look++) {
+        if (norm(pageWords[pi + look].word) === normed[ci]) {
+          pairs.push({ chunkIdx: ci, pageIdx: pi + look });
+          pi = pi + look + 1;
+          found = true;
+          break;
+        }
+      }
+      if (!found) pi++; // skip this chunk word, advance page cursor
+    }
+    return pairs;
+  }
+
+  function findChunkStart(chunkWords) {
+    if (!chunkWords.length || !pageWords) return -1;
+
+    const normed = chunkWords.map(norm);
+
+    for (let i = wordCursor; i < pageWords.length; i++) {
+      if (norm(pageWords[i].word) !== normed[0]) continue;
+
+      // Verify: check next 1-2 words match within a small window
+      let matched = 1;
+      let pi = i + 1;
+      for (let c = 1; c < Math.min(3, normed.length); c++) {
+        for (let look = 0; look < 3 && pi + look < pageWords.length; look++) {
+          if (norm(pageWords[pi + look].word) === normed[c]) {
+            matched++;
+            pi = pi + look + 1;
+            break;
+          }
+        }
+      }
+      if (matched >= Math.min(2, normed.length)) return i;
+    }
+
+    return -1;
+  }
+
+  function removeActiveSpans() {
+    for (const span of activeSpans) {
+      try {
+        const parent = span.parentNode;
+        if (!parent) continue;
+        parent.replaceChild(document.createTextNode(span.textContent), span);
+        parent.normalize();
+      } catch (_) {}
+    }
+    activeSpans = [];
+  }
+
+  function wrapAlignedWords(pairs) {
+    activeSpans = [];
+
+    // Group by text node, preserving order
+    const groups = [];
+    let lastNode = null;
+    for (const { chunkIdx, pageIdx } of pairs) {
+      const pw = pageWords[pageIdx];
+      if (!pw) continue;
+      if (pw.node !== lastNode) {
+        groups.push({ node: pw.node, words: [] });
+        lastNode = pw.node;
+      }
+      groups[groups.length - 1].words.push({ chunkIdx, start: pw.start, end: pw.end });
+    }
+
+    for (const group of groups) {
+      const textNode = group.node;
+      const parent = textNode.parentNode;
+      if (!parent || !textNode.isConnected) continue;
+
+      const fullText = textNode.textContent;
+      const frag = document.createDocumentFragment();
+      let pos = 0;
+
+      for (const w of group.words) {
+        if (w.start > pos) {
+          frag.appendChild(document.createTextNode(fullText.substring(pos, w.start)));
+        }
+        const span = document.createElement('span');
+        span.className = 'lexora-hl';
+        span.setAttribute('data-lw', w.chunkIdx);
+        span.textContent = fullText.substring(w.start, w.end);
+        frag.appendChild(span);
+        activeSpans.push(span);
+        pos = w.end;
+      }
+
+      if (pos < fullText.length) {
+        frag.appendChild(document.createTextNode(fullText.substring(pos)));
+      }
+
+      textNode.replaceWith(frag);
+    }
+  }
+
+  function highlightWord(chunkText, wordIndex) {
+    injectHighlightStyles();
+
+    if (chunkText !== currentChunkText) {
+      removeActiveSpans();
+      currentChunkText = chunkText;
+
+      pageWords = buildPageWords();
+      if (wordCursor >= pageWords.length) wordCursor = 0;
+
+      const chunkWords = chunkText.trim().split(/\s+/);
+      const matchStart = findChunkStart(chunkWords);
+
+      if (matchStart >= 0) {
+        const pairs = alignChunkToPage(chunkWords, matchStart);
+        wrapAlignedWords(pairs);
+        if (pairs.length) {
+          wordCursor = pairs[pairs.length - 1].pageIdx + 1;
+        }
+      }
+    }
+
+    const prev = document.querySelector('.lexora-hl-active');
+    if (prev) prev.classList.remove('lexora-hl-active');
+
+    const target = document.querySelector(`[data-lw="${wordIndex}"]`);
+    if (target) {
+      target.classList.add('lexora-hl-active');
+      target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
+  }
+
+  function clearHighlight(fullReset) {
+    const prev = document.querySelector('.lexora-hl-active');
+    if (prev) prev.classList.remove('lexora-hl-active');
+
+    removeActiveSpans();
+    currentChunkText = null;
+
+    if (fullReset) {
+      pageWords = null;
+      wordCursor = 0;
+    }
+  }
+
   // ── Listen for messages ──────────────────────────────────────────────────
   browserAPI.runtime.onMessage.addListener((msg) => {
     if (msg.action === 'captureFinished' && overlayHost) {
       // Forward to iframe if needed, or handle locally
     } else if (msg.action === 'toggleOverlay') {
       toggleOverlay();
+    } else if (msg.action === 'highlightWord') {
+      highlightWord(msg.chunkText, msg.wordIndex);
+    } else if (msg.action === 'clearHighlight') {
+      clearHighlight(msg.fullReset);
     }
   });
 
