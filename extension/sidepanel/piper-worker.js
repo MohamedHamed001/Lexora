@@ -10,7 +10,6 @@ function log(msg) {
 ort.env.wasm.wasmPaths = {
   'ort-wasm.wasm': 'ort-wasm.wasm',
   'ort-wasm-simd.wasm': 'ort-wasm-simd.wasm',
-  'ort-wasm-threaded.wasm': 'ort-wasm-threaded.wasm'
 };
 ort.env.wasm.numThreads = 1;
 

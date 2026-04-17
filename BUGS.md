@@ -17,10 +17,10 @@
 
 ### To add / fix
 
-- [ ] **Settings** — Remove cloud TTS from settings.
-- [ ] **Audio** — Let the user choose between **Piper** and **Kokoro** in audio options.
-- [ ] **Capture cleanup** — Prefer using the connected AI model first to clean and stylize captured text for readability; if no model is connected, fall back to existing non-model methods.
-- [ ] **UI** — Remove the chat box from all screens except the chat screen.
+- [x] **Settings** — Removed Cloud TTS feature entirely (UI + config + codepath).
+- [x] **Audio** — User can choose between **Piper** and **Kokoro** voice engines.
+- [x] **Capture cleanup** — AI post-capture cleanup removed (local backends truncated / unreliable). **Non-AI** cleanup runs in `capture-clean.js`: Unicode/whitespace normalization, consecutive duplicate heading/paragraph removal, conservative cookie/nav boilerplate line drops. Chat still uses the configured endpoint for Q&A.
+- [x] **UI** — Chat box/input only appears on the Chat screen (pinned to bottom).
 
 ---
 

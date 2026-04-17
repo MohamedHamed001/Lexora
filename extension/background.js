@@ -1,5 +1,13 @@
 // background.js
-const browserAPI = typeof browser !== 'undefined' ? browser : chrome;
+importScripts('capture-clean.js');
+
+const browserAPI =
+  (typeof chrome !== 'undefined' && chrome?.runtime?.getURL ? chrome : null) ||
+  (typeof browser !== 'undefined' && browser?.runtime?.getURL ? browser : null);
+
+if (!browserAPI) {
+  throw new Error('Extension runtime API not found (chrome.runtime/browser.runtime missing)');
+}
 
 browserAPI.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
@@ -80,24 +88,53 @@ browserAPI.runtime.onMessage.addListener((request, sender, sendResponse) => {
           },
         },
         results => {
-          if (browserAPI.runtime.lastError) {
-            sendResponse({ success: false, error: chrome.runtime.lastError.message });
-            return;
-          }
-          const valid = (results || [])
-            .map(r => r.result)
-            .filter(r => r && r.content && r.content.length > 80);
+          (async () => {
+            try {
+              if (browserAPI.runtime.lastError) {
+                const errMsg =
+                  browserAPI.runtime.lastError?.message ||
+                  'Capture failed (runtime error)';
+                sendResponse({ success: false, error: errMsg });
+                return;
+              }
 
-          if (!valid.length) {
-            sendResponse({ success: false, error: 'No content found on this page.' });
-            browserAPI.tabs.sendMessage(tab.id, { action: 'captureFinished', success: false });
-            return;
-          }
+              const valid = (results || [])
+                .map(r => r.result)
+                .filter(r => r && r.content && r.content.length > 80);
 
-          const best = valid.reduce((a, b) => a.content.length >= b.content.length ? a : b);
-          browserAPI.storage.local.set({ currentLesson: best });
-          sendResponse({ success: true, data: best });
-          browserAPI.tabs.sendMessage(tab.id, { action: 'captureFinished', success: true });
+              if (!valid.length) {
+                sendResponse({ success: false, error: 'No content found on this page.' });
+                browserAPI.tabs.sendMessage(tab.id, { action: 'captureFinished', success: false });
+                return;
+              }
+
+              const bestRaw = valid.reduce((a, b) => a.content.length >= b.content.length ? a : b);
+              const best = cleanCapturedLessonNonAi(bestRaw);
+
+              browserAPI.storage.local.set({ currentLesson: best });
+              sendResponse({ success: true, data: best });
+              browserAPI.tabs.sendMessage(tab.id, { action: 'captureFinished', success: true });
+            } catch (e) {
+              // Never leave the UI hanging: fall back to raw capture if anything goes wrong.
+              try {
+                const fallback = (results || [])
+                  .map(r => r.result)
+                  .filter(r => r && r.content && r.content.length > 80)
+                  .reduce((a, b) => a.content.length >= b.content.length ? a : b, null);
+                if (fallback) {
+                  const polished = cleanCapturedLessonNonAi(fallback);
+                  browserAPI.storage.local.set({ currentLesson: polished });
+                  sendResponse({ success: true, data: polished });
+                  browserAPI.tabs.sendMessage(tab.id, { action: 'captureFinished', success: true });
+                } else {
+                  sendResponse({ success: false, error: e?.message || 'Capture failed' });
+                  browserAPI.tabs.sendMessage(tab.id, { action: 'captureFinished', success: false });
+                }
+              } catch (_) {
+                sendResponse({ success: false, error: e?.message || 'Capture failed' });
+              }
+            }
+          })();
         }
       );
     });

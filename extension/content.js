@@ -4,7 +4,13 @@
 (function () {
   'use strict';
 
-  const browserAPI = typeof browser !== 'undefined' ? browser : chrome;
+  const browserAPI =
+    (typeof chrome !== 'undefined' && chrome?.runtime?.getURL ? chrome : null) ||
+    (typeof browser !== 'undefined' && browser?.runtime?.getURL ? browser : null);
+
+  if (!browserAPI) {
+    throw new Error('Extension runtime API not found (chrome.runtime/browser.runtime missing)');
+  }
 
   const BTN_ID    = 'ai-study-companion-btn';
   const BTN_COLOR = 'rgba(109, 40, 217, 0.92)';

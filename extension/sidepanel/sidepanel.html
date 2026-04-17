@@ -49,6 +49,11 @@
           👋 Capture any webpage, then ask me anything about it!
         </div>
       </div>
+
+      <!-- Chat input (Chat tab only) -->
+      <div class="chat-container">
+        <input type="text" id="chat-input" class="chat-input" placeholder="Ask about the captured content…">
+      </div>
     </div>
 
     <!-- CONTENT TAB -->
@@ -61,7 +66,13 @@
     <!-- AUDIO TAB -->
     <div id="audio-panel" class="tab-panel" style="display:none;">
       <h2 style="font-family:var(--font-display);margin-bottom:0.5rem;font-size:1rem;">Audio Narration</h2>
-      <p style="color:var(--text-dim);font-size:0.72rem;margin-bottom:1rem;line-height:1.4;">Powered by Kokoro 82M — neural TTS running locally in your browser.</p>
+      <p style="color:var(--text-dim);font-size:0.72rem;margin-bottom:1rem;line-height:1.4;">Choose your local voice engine. <strong>Piper</strong> starts instantly but sounds more synthetic; <strong>Kokoro</strong> is more natural and human‑like, but takes a moment to load.</p>
+
+      <label style="font-size:0.78rem;color:var(--text-dim);display:block;margin-bottom:6px;">Engine:</label>
+      <select id="tts-engine" style="width:100%;padding:8px;border-radius:6px;background:var(--surface-highest);border:1px solid var(--outline-variant);color:white;font-family:var(--font-body);font-size:0.8rem;outline:none;margin-bottom:1rem;">
+        <option value="kokoro">Kokoro</option>
+        <option value="piper">Piper</option>
+      </select>
 
       <!-- Model download progress -->
       <div id="download-progress" class="download-progress" style="display:none;">
@@ -128,24 +139,10 @@
         </div>
       </div>
 
-      <h3 style="font-size:0.85rem;margin-bottom:0.8rem;color:var(--text-primary);border-bottom:1px solid var(--outline-variant);padding-bottom:4px;">🎙 Premium Voices (Cloud TTS)</h3>
-      <div style="display:flex;flex-direction:column;gap:12px;">
-        <p style="font-size:0.75rem;color:var(--text-dim);margin:0;line-height:1.4;">Provide an OpenAI API key below to override your Mac's internal voices with ultra-realistic cloud voices.</p>
-        <div>
-          <label style="font-size:0.75rem;color:var(--text-dim);display:block;margin-bottom:4px;">OpenAI TTS API Key</label>
-          <input type="password" id="setting-tts-key" class="settings-input" placeholder="sk-...">
-        </div>
-        
-        <button id="save-settings-btn" class="glass action-btn" style="margin-top:8px;">💾 Save Configuration</button>
-        <div id="settings-status" style="font-size:0.75rem;color:#86efac;text-align:center;min-height:16px;"></div>
-      </div>
+      <button id="save-settings-btn" class="glass action-btn" style="margin-top:8px;">💾 Save Configuration</button>
+      <div id="settings-status" style="font-size:0.75rem;color:#86efac;text-align:center;min-height:16px;"></div>
     </div>
 
-  </div>
-
-  <!-- Chat input -->
-  <div class="chat-container">
-    <input type="text" id="chat-input" class="chat-input" placeholder="Ask about the captured content…">
   </div>
 
   <script src="../libs/jspdf.umd.min.js"></script>

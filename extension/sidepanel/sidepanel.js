@@ -1,12 +1,18 @@
 // sidepanel.js — Lexora Kokoro Edition
-const browserAPI = typeof browser !== 'undefined' ? browser : chrome;
+const browserAPI =
+  (typeof chrome !== 'undefined' && chrome?.runtime?.getURL ? chrome : null) ||
+  (typeof browser !== 'undefined' && browser?.runtime?.getURL ? browser : null);
+
+if (!browserAPI) {
+  throw new Error('Extension runtime API not found (chrome.runtime/browser.runtime missing)');
+}
 
 let currentLesson = null;
 let config = {
   url: 'http://127.0.0.1:1234/v1/chat/completions',
   model: 'local-model',
   key: '',
-  ttsKey: ''
+  ttsEngine: 'kokoro',
 };
 
 // ── Debug Console ──────────────────────────────────────────────────────────
@@ -31,7 +37,8 @@ document.querySelectorAll('.tab').forEach(tab => {
     tab.classList.add('active');
     const id = tab.dataset.tab;
     document.querySelectorAll('.tab-panel').forEach(p => p.style.display = 'none');
-    document.getElementById(`${id}-panel`).style.display = 'block';
+    const panel = document.getElementById(`${id}-panel`);
+    if (panel) panel.style.display = id === 'chat' ? 'flex' : 'block';
   };
 });
 
@@ -39,6 +46,15 @@ document.querySelectorAll('.tab').forEach(tab => {
 const captureBtn    = document.getElementById('capture-btn');
 const captureStatus = document.getElementById('capture-status');
 const popOutBtn     = document.getElementById('pop-out-btn');
+
+// Refresh UI if storage updates (e.g. overlay/sidepanel sync).
+browserAPI.storage.onChanged.addListener((changes, areaName) => {
+  if (areaName !== 'local') return;
+  if (changes.currentLesson?.newValue) {
+    currentLesson = changes.currentLesson.newValue;
+    applyLesson(currentLesson);
+  }
+});
 
 if (popOutBtn) {
   if (window.parent !== window) {
@@ -60,18 +76,18 @@ captureBtn.addEventListener('click', () => {
   captureBtn.disabled      = true;
   captureStatus.textContent = '';
 
-  browserAPI.runtime.sendMessage({ action: 'triggerDeepCapture' }, resp => {
+  browserAPI.runtime.sendMessage({ action: 'triggerDeepCapture' }, (resp) => {
     captureBtn.disabled = false;
 
     if (resp && resp.success) {
       currentLesson = resp.data;
       browserAPI.storage.local.set({ currentLesson });
       applyLesson(currentLesson);
-      captureBtn.textContent    = '✅ Captured';
-      captureStatus.textContent = '';
+      captureBtn.textContent = '✅ Captured';
+      if (captureStatus) captureStatus.textContent = '';
       setTimeout(() => { captureBtn.textContent = '✨ Capture'; }, 2500);
     } else {
-      captureBtn.textContent    = '✨ Capture';
+      captureBtn.textContent = '✨ Capture';
       captureStatus.textContent = '⚠️ ' + (resp?.error || 'No content found on this page.');
     }
   });
@@ -271,13 +287,77 @@ const statusLabel = document.getElementById('status-label');
 const downloadProgress = document.getElementById('download-progress');
 const downloadBar      = document.getElementById('download-bar');
 const downloadText     = document.getElementById('download-text');
+const ttsEngineSelect  = document.getElementById('tts-engine');
 
 let currentAudioElement = null;
 let seekerTimer = null;
 let currentChunkWords = [];
 let currentChunkText = '';
 let lastHighlightedWord = -1;
-const openAIVoices = ['alloy', 'echo', 'fable', 'onyx', 'nova', 'shimmer'];
+
+// Piper engine (bundled model)
+let piperWorker = null;
+let piperReady = false;
+let piperSampleRate = 16000;
+let piperLoadPromise = null;
+
+function createPiperWorker() {
+  return new Worker(browserAPI.runtime.getURL('sidepanel/piper-worker.js'));
+}
+
+async function loadPiperModel() {
+  if (piperReady) return true;
+  if (piperLoadPromise) return piperLoadPromise;
+
+  piperLoadPromise = (async () => {
+    statusLabel.textContent = '🧠 Loading Piper…';
+    try {
+      const modelUrl = browserAPI.runtime.getURL('sidepanel/amy-low.onnx');
+      const configUrl = browserAPI.runtime.getURL('sidepanel/amy-low.onnx.json');
+      const [modelResp, configResp] = await Promise.all([fetch(modelUrl), fetch(configUrl)]);
+      if (!modelResp.ok || !configResp.ok) throw new Error('Failed to load Piper model assets');
+
+      const modelBuffer = await modelResp.arrayBuffer();
+      const configJson = await configResp.text();
+
+      try {
+        const parsed = JSON.parse(configJson);
+        if (parsed?.audio?.sample_rate) piperSampleRate = parsed.audio.sample_rate;
+      } catch (_) {}
+
+      piperWorker = createPiperWorker();
+
+      await new Promise((resolve, reject) => {
+        const timeout = setTimeout(() => reject(new Error('Piper init timed out')), 300000);
+        piperWorker.onmessage = (e) => {
+          const msg = e.data;
+          if (msg.type === 'initialized') {
+            clearTimeout(timeout);
+            resolve(true);
+          } else if (msg.type === 'log') {
+            logDebug(`Piper: ${msg.message}`);
+          } else if (msg.type === 'error') {
+            clearTimeout(timeout);
+            reject(new Error(msg.error));
+          }
+        };
+        piperWorker.postMessage({ type: 'init', model: modelBuffer, config: configJson }, [modelBuffer]);
+      });
+
+      piperReady = true;
+      statusLabel.textContent = '';
+      return true;
+    } catch (e) {
+      logDebug(`Piper load error: ${e.message}`, 'error');
+      statusLabel.textContent = '❌ ' + e.message;
+      piperLoadPromise = null;
+      return false;
+    }
+  })();
+
+  return piperLoadPromise;
+}
+
 let kokoroWorker = null;       // main worker — synthesizes the current chunk
 let prefetchPool = [];         // pool of workers for parallel prefetch
 let kokoroReady = false;
@@ -399,13 +479,11 @@ function findGoogleVoice() {
 function populateVoicePicker(availableVoiceIds) {
   voicePicker.innerHTML = '';
 
-  if (config.ttsKey) {
-    openAIVoices.forEach(v => {
-      const opt = document.createElement('option');
-      opt.value = v;
-      opt.textContent = `OpenAI: ${v.charAt(0).toUpperCase() + v.slice(1)}`;
-      voicePicker.appendChild(opt);
-    });
+  if (config.ttsEngine === 'piper') {
+    const opt = document.createElement('option');
+    opt.value = 'piper:amy';
+    opt.textContent = 'Amy (Piper)';
+    voicePicker.appendChild(opt);
     return;
   }
 
@@ -440,38 +518,13 @@ function populateVoicePicker(availableVoiceIds) {
     voicePicker.appendChild(optGroup);
   }
 
-  // Group 2: Browser fallback voices
-  const all = synth.getVoices();
-  if (all.length) {
-    const optGroup = document.createElement('optgroup');
-    optGroup.label = '🖥️ Browser Voices';
-
-    const siri = all.find(v => v.name.includes('Siri'));
-    const googleUS = all.find(v => v.name === 'Google US English');
-
-    if (googleUS) {
-      const opt = document.createElement('option');
-      opt.value = `native:${all.indexOf(googleUS)}`;
-      opt.textContent = 'Google US English';
-      optGroup.appendChild(opt);
-    }
-    if (siri) {
-      const opt = document.createElement('option');
-      opt.value = `native:${all.indexOf(siri)}`;
-      opt.textContent = 'Siri (System)';
-      optGroup.appendChild(opt);
-    }
-
-    if (optGroup.children.length) voicePicker.appendChild(optGroup);
-  }
-
   // Default to af_heart (the best voice)
   const heartOpt = voicePicker.querySelector('option[value="kokoro:af_heart"]');
   if (heartOpt) heartOpt.selected = true;
 }
 
 async function initVoice(tries = 0) {
-  if (config.ttsKey) {
+  if (config.ttsEngine === 'piper') {
     populateVoicePicker([]);
     return;
   }
@@ -772,12 +825,7 @@ let needsResynthOnResume = false;
 
 voicePicker.addEventListener('change', () => {
   const val = voicePicker.value;
-  if (val.startsWith('native:')) {
-    const idx = parseInt(val.split(':')[1], 10);
-    googleVoice = synth.getVoices()[idx] || null;
-  } else {
-    googleVoice = null;
-  }
+  googleVoice = null;
 
   const wasSpeaking = speaking;
   const wasPaused = isPaused;
@@ -905,8 +953,43 @@ async function speakNext() {
   
   const text = sentences[sentenceIdx].trim();
   const selectedValue = voicePicker.value;
+  const engine = config.ttsEngine || 'kokoro';
 
-  if (selectedValue.startsWith('kokoro:')) {
+  if (engine === 'piper') {
+    // ── Piper TTS (bundled model) ─────────────────────────────────────────
+    playBtn.disabled = true;
+    playBtn.textContent = '⏳ Loading…';
+    const ok = await loadPiperModel();
+    playBtn.disabled = false;
+    if (!ok || !speaking) {
+      playBtn.textContent = '▶ Play';
+      return;
+    }
+    playBtn.textContent = '⏸ Pause';
+
+    const requestId = ++currentSynthesisId;
+    statusLabel.textContent = 'Synthesizing…';
+    piperWorker.onmessage = (e) => {
+      const msg = e.data;
+      if (msg.requestId != null && msg.requestId !== currentSynthesisId) return;
+      if (msg.type === 'audio') {
+        statusLabel.textContent = '';
+        const audioSamples = msg.data instanceof Float32Array ? msg.data : new Float32Array(msg.data || []);
+        const blob = encodeWAV(audioSamples, piperSampleRate);
+        playFromBlob(blob, piperSampleRate, 'piper');
+      } else if (msg.type === 'log') {
+        logDebug(`Piper: ${msg.message}`);
+      } else if (msg.type === 'error') {
+        logDebug(`Piper synthesis error: ${msg.error}`, 'error');
+        statusLabel.textContent = '';
+        if (speaking && requestId === currentSynthesisId) { sentenceIdx++; speakNext(); }
+      }
+    };
+    piperWorker.postMessage({ type: 'synthesize', text, requestId });
+    return;
+  }
+
+  if (engine === 'kokoro' && selectedValue.startsWith('kokoro:')) {
     // ── Kokoro TTS (with prefetch-ahead pipeline) ───────────────────────
     const voiceId = selectedValue.split(':')[1];
     playBtn.disabled = true;
@@ -933,48 +1016,9 @@ async function speakNext() {
 
     // Not cached yet — waiting for worker to finish this chunk
     statusLabel.textContent = `Synthesizing ${synthCompletedCount}/${synthTotalCount}…`;
-
-  } else if (config.ttsKey) {
-    // ── OpenAI TTS ──────────────────────────────────────────────────────
-    const voice = selectedValue || 'alloy';
-    try {
-      const resp = await fetch('https://api.openai.com/v1/audio/speech', {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${config.ttsKey}`,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({ model: 'tts-1', voice, input: text })
-      });
-      if (!resp.ok) throw new Error('API failed');
-      const blob = await resp.blob();
-      const url = URL.createObjectURL(blob);
-      currentAudioElement = new Audio(url);
-      currentAudioElement.playbackRate = parseFloat(rateSlider.value);
-      currentAudioElement.preservesPitch = true;
-      currentAudioElement.onended = () => {
-        URL.revokeObjectURL(url);
-        currentAudioElement = null;
-        if (speaking) {
-          sentenceIdx++;
-          speakNext();
-        } else {
-          stopSeekerTimer();
-        }
-      };
-      if (speaking) {
-        currentAudioElement.play();
-        startSeekerTimer();
-      }
-    } catch (e) {
-      speaking = false;
-      playBtn.textContent = '▶ Play';
-    }
-
   } else {
-    // ── Native Speech Fallback ──────────────────────────────────────────
+    // ── Native Speech Fallback (should be rare) ─────────────────────────
     const utt = new SpeechSynthesisUtterance(text);
-    if (googleVoice) utt.voice = googleVoice;
     utt.rate  = parseFloat(rateSlider.value);
     utt.onstart = () => { startSeekerTimer(); };
     utt.onend = utt.onerror = () => {
@@ -1027,11 +1071,14 @@ browserAPI.storage.local.get(['currentLesson', 'lexoraConfig'], res => {
   }
   if (res.lexoraConfig) {
     config = { ...config, ...res.lexoraConfig };
+    // Cloud TTS feature was removed — ensure we don't keep stale secrets.
+    delete config.ttsKey;
+    delete config.aiCleanupOnCapture;
   }
   document.getElementById('setting-url').value = config.url || '';
   document.getElementById('setting-model').value = config.model || '';
   document.getElementById('setting-key').value = config.key || '';
-  document.getElementById('setting-tts-key').value = config.ttsKey || '';
+  if (ttsEngineSelect) ttsEngineSelect.value = config.ttsEngine || 'kokoro';
   initVoice();
 });
 
@@ -1039,7 +1086,6 @@ document.getElementById('save-settings-btn').addEventListener('click', () => {
   config.url = document.getElementById('setting-url').value.trim();
   config.model = document.getElementById('setting-model').value.trim();
   config.key = document.getElementById('setting-key').value.trim();
-  config.ttsKey = document.getElementById('setting-tts-key').value.trim();
   browserAPI.storage.local.set({ lexoraConfig: config }, () => {
     const status = document.getElementById('settings-status');
     status.textContent = '✅ Config Saved';
@@ -1047,3 +1093,14 @@ document.getElementById('save-settings-btn').addEventListener('click', () => {
     setTimeout(() => { status.textContent = ''; }, 2000);
   });
 });
+
+if (ttsEngineSelect) {
+  ttsEngineSelect.addEventListener('change', () => {
+    const nextEngine = ttsEngineSelect.value === 'piper' ? 'piper' : 'kokoro';
+    config.ttsEngine = nextEngine;
+    cancelAudio(true);
+    showDownloadProgress(false);
+    populateVoicePicker(nextEngine === 'kokoro' ? Object.keys(KOKORO_VOICE_META) : []);
+    browserAPI.storage.local.set({ lexoraConfig: config });
+  });
+}
