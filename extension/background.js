@@ -1,5 +1,5 @@
 // background.js
-importScripts('capture-clean.js');
+try { importScripts('capture-clean.js'); } catch (_) { /* Firefox loads via manifest scripts[] */ }
 
 const browserAPI =
   (typeof chrome !== 'undefined' && chrome?.runtime?.getURL ? chrome : null) ||

@@ -13,18 +13,18 @@
   "host_permissions": ["<all_urls>"],
   "background": {
     "service_worker": "background.js",
-    "scripts": ["background.js"]
+    "scripts": ["capture-clean.js", "background.js"]
   },
   "action": {
     "default_title": "AI-Study Companion",
     "default_icon": {
       "48": "icons/icon48.png",
-      "128": "icons/icon128.png"
+      "128": "icons/icon48.png"
     }
   },
   "icons": {
     "48": "icons/icon48.png",
-    "128": "icons/icon128.png"
+    "128": "icons/icon48.png"
   },
   "content_security_policy": {
     "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'"
@@ -47,7 +47,10 @@
   "browser_specific_settings": {
     "gecko": {
       "id": "lexora-companion@hamed.ai",
-      "strict_min_version": "109.0"
+      "strict_min_version": "109.0",
+      "data_collection_permissions": {
+        "required": ["none"]
+      }
     }
   },
   "sidebar_action": {
