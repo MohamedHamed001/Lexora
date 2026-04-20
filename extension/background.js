@@ -55,6 +55,17 @@ browserAPI.runtime.onMessage.addListener((request, sender, sendResponse) => {
         {
           target: { tabId: tab.id, allFrames: true },
           func: () => {
+            // Never capture our own sidepanel / extension UI (injected with allFrames: true).
+            const p = location.protocol;
+            if (
+              p === 'chrome-extension:' ||
+              p === 'moz-extension:' ||
+              p === 'webkit-extension:' ||
+              p === 'chrome-search:'
+            ) {
+              return null;
+            }
+
             const selectors = [
               'h1','h2','h3','h4','p','li',
               '.index--body--299_C',
@@ -64,13 +75,20 @@ browserAPI.runtime.onMessage.addListener((request, sender, sendResponse) => {
               "div[class*='text-lesson']",
               "div[class*='video-lesson']",
             ];
+            const allEls = Array.from(document.querySelectorAll(selectors.join(',')));
+            // Keep only "leaf" matches: drop a node if another matched node sits inside it.
+            // Otherwise a card/container's innerText duplicates every nested p/li/h (common in hide/show & lesson UIs).
+            const leafEls = allEls.filter((el) =>
+              !allEls.some((other) => other !== el && el.contains(other))
+            );
             const blocks = [];
-            const seen   = new Set();
-            document.querySelectorAll(selectors.join(',')).forEach(el => {
+            const seen = new Set();
+            leafEls.forEach((el) => {
               if (el.closest('nav,button,header,footer,[role="navigation"]')) return;
               const isVisible = !!el.offsetParent;
               const txt = (isVisible ? el.innerText : el.textContent)
-                .replace(/\s+/g,' ').trim();
+                .replace(/\s+/g, ' ')
+                .trim();
               if (txt.length > 10 && !seen.has(txt)) {
                 seen.add(txt);
                 blocks.push({ tag: el.tagName, text: txt });

@@ -105,14 +105,15 @@ async function init(modelArray, configJson) {
 return initPromise;
 }
 
-async function synthesize(text, requestId) {
+async function synthesize(text, requestId, prefetchIdx) {
   if (!session || !phonemizer) {
     log('Error: Session or Phonemizer not ready.');
     return;
   }
 
   try {
-    log(`Synthesizing text: "${text.substring(0, 30)}${text.length > 30 ? '...' : ''}"`);
+    const tag = prefetchIdx != null ? `[prefetch ${prefetchIdx}] ` : '';
+    log(`${tag}Synthesizing text: "${text.substring(0, 30)}${text.length > 30 ? '...' : ''}"`);
     
     const phonemeRes = phonemizer.phonemize(text, config.espeak.voice);
     if (!phonemeRes || !phonemeRes.length || !phonemeRes[0].phonemes) {
@@ -173,10 +174,18 @@ async function synthesize(text, requestId) {
     log(`Synthesis complete: ${audioOut.data.length} samples in ${(endTime - startTime).toFixed(2)}ms`);
 
     const audioData = audioOut.data; 
-    self.postMessage({ type: 'audio', data: audioData, requestId: requestId }, [audioData.buffer]);
+    self.postMessage(
+      { type: 'audio', data: audioData, requestId, prefetchIdx },
+      [audioData.buffer]
+    );
   } catch (e) {
     log(`Synthesis Error: ${e.message}`);
-    self.postMessage({ type: 'error', error: e.message || 'Synthesis failed', requestId: requestId });
+    self.postMessage({
+      type: 'error',
+      error: e.message || 'Synthesis failed',
+      requestId,
+      prefetchIdx,
+    });
   }
 }
 
@@ -185,6 +194,6 @@ self.onmessage = async (e) => {
     await init(e.data.model, e.data.config);
   } else if (e.data.type === 'synthesize') {
     if (initPromise) await initPromise;
-    await synthesize(e.data.text, e.data.requestId);
+    await synthesize(e.data.text, e.data.requestId, e.data.prefetchIdx);
   }
 };

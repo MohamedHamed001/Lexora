@@ -74,6 +74,14 @@
         <option value="piper">Piper</option>
       </select>
 
+      <div id="kokoro-dtype-row" style="margin-bottom:1rem;">
+        <label style="font-size:0.78rem;color:var(--text-dim);display:block;margin-bottom:6px;">Kokoro model (disk vs speed):</label>
+        <select id="kokoro-dtype" style="width:100%;padding:8px;border-radius:6px;background:var(--surface-highest);border:1px solid var(--outline-variant);color:white;font-family:var(--font-body);font-size:0.8rem;outline:none;">
+          <option value="q8">Q8 — smaller download (~92 MB), heavier CPU work</option>
+          <option value="q4">Q4 — larger cache (~300 MB), faster startup &amp; speech</option>
+        </select>
+      </div>
+
       <!-- Model download progress -->
       <div id="download-progress" class="download-progress" style="display:none;">
         <div class="download-bar-track">
@@ -96,7 +104,11 @@
         <button id="next-btn" class="glass action-btn" style="flex:1;">Next ⏭</button>
       </div>
 
-      <label style="font-size:0.78rem;color:var(--text-dim);display:block;margin-bottom:6px;">Voice:</label>
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;flex-wrap:wrap;">
+        <label style="font-size:0.78rem;color:var(--text-dim);margin:0;">Voice:</label>
+        <button type="button" id="refresh-voices-btn" class="glass action-btn" style="padding:4px 10px;font-size:0.72rem;margin-left:auto;">↻ Refresh voices</button>
+      </div>
+      <p id="voice-hint" style="font-size:0.68rem;color:var(--text-dim);margin:-4px 0 8px;line-height:1.35;display:none;">Uses your Mac’s speech voices (same engine as before). Comic/novelty voices are grouped at the bottom. Click ↻ Refresh if the list is empty; use Find (⌘F / Ctrl+F) to jump to “Google”.</p>
       <select id="voice-picker" style="width:100%;padding:8px;border-radius:6px;background:var(--surface-highest);border:1px solid var(--outline-variant);color:white;font-family:var(--font-body);font-size:0.8rem;outline:none;"></select>
       
       <div id="status-label" style="font-size:0.75rem;color:var(--text-dim);text-align:center;margin-top:12px;min-height:16px;"></div>
