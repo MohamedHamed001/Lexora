@@ -99,6 +99,8 @@ captureBtn.addEventListener('click', () => {
 function applyLesson(lesson) {
   if (!lesson) return;
 
+  resetNarrationForNewLesson();
+
   const urlEl = document.getElementById('lesson-url');
   const titleEl = document.getElementById('lesson-title');
   const lessonHeader = document.getElementById('lesson-header');
@@ -310,14 +312,15 @@ let sysUtteranceHighlight = false;
 let sysUtteranceT0 = 0;
 let sysUtteranceDurationEst = 0;
 
-// Piper engine — bundled models registry
+// Piper engine — on-demand models registry
 /**
- * Each entry: { file: '<basename>.onnx', label: '<display name>', sampleRate: <fallback Hz> }
- * The .onnx and .onnx.json files must both live in sidepanel/.
+ * Each entry: { label, sampleRate }
+ * Models are downloaded from HuggingFace CDN on first use and cached in
+ * IndexedDB by the piper-worker.  No .onnx files need to be bundled.
  */
 const PIPER_MODELS = {
-  amy:        { file: 'amy-low.onnx',                  label: 'Amy (low)',             sampleRate: 16000 },
-  hfc_female: { file: 'en_US-hfc_female-medium.onnx',  label: 'Google Female EN (medium)', sampleRate: 22050 },
+  amy:        { label: 'Amy (low)',                  sampleRate: 16000 },
+  hfc_female: { label: 'Google Female EN (medium)',  sampleRate: 22050 },
 };
 
 /** Larger text batches per Piper inference (fewer gaps; still clause/sentence aware). */
@@ -353,15 +356,20 @@ function disposePiperWorkers() {
   piperPrefetchPool = [];
 }
 
-function initPiperWorkerInstance(worker, sourceModelBuffer, configJson) {
+/**
+ * Initialize a piper worker by sending it a modelKey.
+ * The worker downloads (or loads from IDB cache) the model itself.
+ */
+function initPiperWorkerInstance(worker, modelKey) {
   return new Promise((resolve, reject) => {
     const timeout = setTimeout(() => reject(new Error('Piper init timed out')), 300000);
-    const modelCopy = sourceModelBuffer.slice(0);
     worker.onmessage = (e) => {
       const msg = e.data;
       if (msg.type === 'initialized') {
         clearTimeout(timeout);
         resolve();
+      } else if (msg.type === 'progress') {
+        updateDownloadProgress(msg.progress);
       } else if (msg.type === 'log') {
         logDebug(`Piper: ${msg.message}`);
       } else if (msg.type === 'error') {
@@ -373,7 +381,7 @@ function initPiperWorkerInstance(worker, sourceModelBuffer, configJson) {
       clearTimeout(timeout);
       reject(err);
     };
-    worker.postMessage({ type: 'init', model: modelCopy, config: configJson }, [modelCopy]);
+    worker.postMessage({ type: 'init', modelKey });
   });
 }
 
@@ -393,33 +401,22 @@ async function loadPiperModel(modelKey = 'amy') {
   }
 
   const modelMeta = PIPER_MODELS[modelKey] || PIPER_MODELS.amy;
+  piperSampleRate = modelMeta.sampleRate;
 
   piperLoadPromise = (async () => {
-    statusLabel.textContent = `🧠 Loading Piper (${modelMeta.label}, 1 + ${NUM_PIPER_PREFETCH_WORKERS} prefetch)…`;
+    statusLabel.textContent = `🧠 Loading Piper (${modelMeta.label})…`;
+    showDownloadProgress(true);
+    logDebug(`Loading Piper on-demand (${modelMeta.label}, 1 main + ${NUM_PIPER_PREFETCH_WORKERS} prefetch)…`);
     try {
-      const modelUrl = browserAPI.runtime.getURL(`sidepanel/${modelMeta.file}`);
-      const configUrl = browserAPI.runtime.getURL(`sidepanel/${modelMeta.file}.json`);
-      const [modelResp, configResp] = await Promise.all([fetch(modelUrl), fetch(configUrl)]);
-      if (!modelResp.ok || !configResp.ok) throw new Error(`Failed to load Piper model assets (${modelMeta.label})`);
-
-      const modelBuffer = await modelResp.arrayBuffer();
-      const configJson = await configResp.text();
-
-      try {
-        const parsed = JSON.parse(configJson);
-        if (parsed?.audio?.sample_rate) piperSampleRate = parsed.audio.sample_rate;
-        else piperSampleRate = modelMeta.sampleRate;
-      } catch (_) {
-        piperSampleRate = modelMeta.sampleRate;
-      }
-
+      // 1) Init main worker — it downloads the model (or loads from IDB cache)
       piperMainWorker = createPiperWorker();
-      await initPiperWorkerInstance(piperMainWorker, modelBuffer, configJson);
+      await initPiperWorkerInstance(piperMainWorker, modelKey);
 
+      // 2) Spin up prefetch pool — each reuses browser-cached IDB model (no re-download)
       piperPrefetchPool = [];
       const prefetchWorkers = [];
       for (let i = 0; i < NUM_PIPER_PREFETCH_WORKERS; i++) prefetchWorkers.push(createPiperWorker());
-      await Promise.all(prefetchWorkers.map((w) => initPiperWorkerInstance(w, modelBuffer, configJson)));
+      await Promise.all(prefetchWorkers.map((w) => initPiperWorkerInstance(w, modelKey)));
       piperPrefetchPool = prefetchWorkers;
 
       const attach = (w) => {
@@ -431,10 +428,12 @@ async function loadPiperModel(modelKey = 'amy') {
       piperReady = true;
       piperLoadedModelKey = modelKey;
       statusLabel.textContent = '';
+      showDownloadProgress(false);
       return true;
     } catch (e) {
       logDebug(`Piper load error: ${e.message}`, 'error');
       statusLabel.textContent = '❌ ' + e.message;
+      showDownloadProgress(false);
       disposePiperWorkers();
       piperLoadPromise = null;
       piperLoadedModelKey = null;
@@ -817,9 +816,9 @@ function populateVoicePicker(availableVoiceIds) {
   if (config.ttsEngine === 'piper') {
     if (voiceHintEl) voiceHintEl.style.display = 'none';
 
-    // Only show the two bundled offline models — no Mac/system voices
+    // Show on-demand downloadable Piper voices
     const piperGroup = document.createElement('optgroup');
-    piperGroup.label = 'Piper (offline — bundled)';
+    piperGroup.label = 'Piper (offline — downloads on first use)';
 
     const amy = document.createElement('option');
     amy.value = `${PIPER_BUNDLED_PREFIX}amy`;
@@ -1093,6 +1092,18 @@ function cancelAudio(clearCache = false) {
       if (v == null) piperAudioCache.delete(k);
     }
   }
+}
+
+/** New capture / lesson: clear TTS chunk state so Play rebuilds from fresh content. */
+function resetNarrationForNewLesson() {
+  cancelAudio(true);
+  sentences = [];
+  sentenceIdx = 0;
+  speaking = false;
+  isPaused = false;
+  needsResynthOnResume = false;
+  if (playBtn) playBtn.textContent = '▶ Play';
+  seekBar.value = 0;
 }
 
 function sendClearHighlight(fullReset = false) {
@@ -1637,4 +1648,32 @@ if (refreshVoicesBtn) {
     primeSpeechSynthesisVoices();
     if (config.ttsEngine === 'piper') populateVoicePicker([]);
   });
+}
+
+// ── Minimized overlay: parent page forwards prev / play / next via postMessage ──
+window.addEventListener('message', (event) => {
+  if (event.source !== window.parent) return;
+  const d = event.data;
+  if (!d || d.type !== 'lexora') return;
+  if (d.action === 'play-toggle') playBtn?.click();
+  else if (d.action === 'prev') prevBtn?.click();
+  else if (d.action === 'next') nextBtn?.click();
+});
+
+function syncMiniPlayerChrome() {
+  try {
+    if (window.parent !== window) {
+      let playGlyph = '▶';
+      const t = playBtn?.textContent || '';
+      if (/⏸|Pause/.test(t)) playGlyph = '⏸';
+      else if (/⏳|Loading/.test(t)) playGlyph = '⏳';
+      window.parent.postMessage({ type: 'lexora-ui', playGlyph }, '*');
+    }
+  } catch (_) {}
+}
+
+if (playBtn) {
+  const mo = new MutationObserver(() => syncMiniPlayerChrome());
+  mo.observe(playBtn, { childList: true, subtree: true, characterData: true });
+  syncMiniPlayerChrome();
 }

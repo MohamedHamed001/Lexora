@@ -119,19 +119,62 @@
         background: rgba(239, 68, 68, 0.8);
       }
       
-      /* Minimized State */
+      /* Minimized State — compact audio strip + expand */
       .minimized-gem {
         position: absolute;
         inset: 0;
         display: none;
         align-items: center;
         justify-content: center;
+        gap: 4px;
+        padding: 0 8px;
+        box-sizing: border-box;
         background: linear-gradient(135deg, #6d28d9 0%, #4f46e5 100%);
         cursor: grab;
-        font-size: 24px;
         color: white;
         box-shadow: 0 0 20px rgba(109, 40, 217, 0.5);
         animation: gemPulse 2s infinite ease-in-out;
+      }
+      .mini-audio-btn {
+        flex: 0 0 auto;
+        width: 36px;
+        height: 36px;
+        border: none;
+        border-radius: 10px;
+        background: rgba(255,255,255,0.18);
+        color: white;
+        font-size: 15px;
+        line-height: 1;
+        cursor: pointer;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 0;
+        transition: background 0.15s;
+      }
+      .mini-audio-btn:hover {
+        background: rgba(255,255,255,0.32);
+      }
+      .mini-audio-btn:active {
+        transform: scale(0.96);
+      }
+      .mini-expand-btn {
+        flex: 0 0 auto;
+        width: 32px;
+        height: 32px;
+        border: none;
+        border-radius: 50%;
+        background: rgba(255,255,255,0.22);
+        color: white;
+        font-size: 14px;
+        cursor: pointer;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        margin-left: 2px;
+      }
+      .mini-expand-btn:hover {
+        background: rgba(255,255,255,0.35);
       }
       @keyframes gemPulse {
         0%, 100% { transform: scale(1); box-shadow: 0 0 15px rgba(109, 40, 217, 0.4); }
@@ -156,10 +199,64 @@
 
     const gem = document.createElement('div');
     gem.className = 'minimized-gem';
-    gem.innerHTML = '✦';
     let gemDragStartPos = null;
 
+    function postToSidepanel(action) {
+      try {
+        if (overlayIframe && overlayIframe.contentWindow) {
+          overlayIframe.contentWindow.postMessage({ type: 'lexora', action }, '*');
+        }
+      } catch (_) {}
+    }
+
+    function makeMiniBtn(label, title, action) {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'mini-audio-btn';
+      b.textContent = label;
+      b.title = title;
+      b.addEventListener('click', (e) => {
+        e.stopPropagation();
+        e.preventDefault();
+        postToSidepanel(action);
+      });
+      b.addEventListener('mousedown', (e) => e.stopPropagation());
+      b.addEventListener('mouseup', (e) => e.stopPropagation());
+      return b;
+    }
+
+    const miniPrev = makeMiniBtn('⏮', 'Previous sentence', 'prev');
+    const miniPlay = makeMiniBtn('▶', 'Play / Pause', 'play-toggle');
+    miniPlay.classList.add('mini-play-btn');
+    const miniNext = makeMiniBtn('⏭', 'Next sentence', 'next');
+
+    const expandBtn = document.createElement('button');
+    expandBtn.type = 'button';
+    expandBtn.className = 'mini-expand-btn';
+    expandBtn.textContent = '⛶';
+    expandBtn.title = 'Expand panel';
+    expandBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      e.preventDefault();
+      setMinimized(false);
+    });
+    expandBtn.addEventListener('mousedown', (e) => e.stopPropagation());
+    expandBtn.addEventListener('mouseup', (e) => e.stopPropagation());
+
+    gem.appendChild(miniPrev);
+    gem.appendChild(miniPlay);
+    gem.appendChild(miniNext);
+    gem.appendChild(expandBtn);
+
+    window.addEventListener('message', (ev) => {
+      if (!ev.data || ev.data.type !== 'lexora-ui') return;
+      if (overlayIframe && ev.source !== overlayIframe.contentWindow) return;
+      const g = ev.data.playGlyph;
+      if (g && miniPlay) miniPlay.textContent = g;
+    });
+
     gem.onmousedown = (e) => {
+      if (e.target.closest('button')) return;
       gemDragStartPos = { x: e.clientX, y: e.clientY };
       isDragging = true;
       const rect = overlayHost.getBoundingClientRect();
@@ -170,6 +267,7 @@
     };
 
     gem.onmouseup = (e) => {
+      if (e.target.closest('button')) return;
       if (!gemDragStartPos) return;
       const dx = Math.abs(e.clientX - gemDragStartPos.x);
       const dy = Math.abs(e.clientY - gemDragStartPos.y);
@@ -237,8 +335,10 @@
       const x = e.clientX - dragOffset.x;
       const y = e.clientY - dragOffset.y;
       
-      const clampedX = Math.max(0, Math.min(window.innerWidth - (isMinimized ? 64 : 420), x));
-      const clampedY = Math.max(0, Math.min(window.innerHeight - (isMinimized ? 64 : 600), y));
+      const minW = isMinimized ? 220 : 420;
+      const minH = isMinimized ? 52 : 600;
+      const clampedX = Math.max(0, Math.min(window.innerWidth - minW, x));
+      const clampedY = Math.max(0, Math.min(window.innerHeight - minH, y));
       
       overlayHost.style.left = clampedX + 'px';
       overlayHost.style.top = clampedY + 'px';
@@ -268,9 +368,9 @@
     isMinimized = min;
     
     if (min) {
-      overlayHost.style.width = '64px';
-      overlayHost.style.height = '64px';
-      overlayHost.style.borderRadius = '32px';
+      overlayHost.style.width = '220px';
+      overlayHost.style.height = '52px';
+      overlayHost.style.borderRadius = '26px';
       overlayShadow.querySelector('.minimized-gem').style.display = 'flex';
       overlayIframe.style.opacity = '0';
       overlayIframe.style.pointerEvents = 'none';

@@ -51,7 +51,7 @@ The extension was born from a simple personal need: I lose focus when I only rea
 | Category | Feature |
 |---|---|
 | 📸 **Smart Capture** | Deep extraction from main frame + all iframes; captures hidden/collapsed content; deterministic cleanup removes boilerplate (cookie banners, nav, footers) |
-| 🗣️ **Neural TTS** | Two local engines: **Kokoro** (natural, human-like, ~92 MB model) and **Piper** (instant startup, lightweight ONNX) |
+| 🗣️ **Neural TTS** | Two local engines: **Kokoro** (natural, human-like, ~92 MB model) and **Piper** (fast, lightweight ONNX, 2 voices). Both download models on first use and cache locally |
 | 🎯 **Word Highlighting** | Character-weighted word-level highlighting synced to audio playback; works across iframes; smooth scrolling follows the spoken word |
 | 💬 **AI Chat** | Context-aware Q&A powered by any OpenAI-compatible endpoint (LM Studio, Ollama, OpenAI API, etc.) |
 | 📄 **PDF Export** | One-click export of captured content to a formatted PDF via jsPDF |
@@ -68,7 +68,7 @@ The extension was born from a simple personal need: I lose focus when I only rea
 |---|---|
 | **Extension Platform** | Chrome/Firefox Manifest V3, Service Workers |
 | **TTS (Kokoro)** | [Kokoro-82M ONNX](https://huggingface.co/onnx-community/Kokoro-82M-v1.0-ONNX), Transformers.js, WebAssembly |
-| **TTS (Piper)** | [Piper](https://github.com/rhasspy/piper) `amy-low` model, ONNX Runtime Web, `piper_phonemize` WASM |
+| **TTS (Piper)** | [Piper](https://github.com/rhasspy/piper) `amy-low` + `hfc_female-medium` models (downloaded on demand from [HuggingFace](https://huggingface.co/rhasspy/piper-voices)), ONNX Runtime Web, `piper_phonemize` WASM |
 | **AI Chat** | Any OpenAI-compatible `/v1/chat/completions` endpoint (proxied via background service worker) |
 | **PDF Export** | [jsPDF](https://github.com/parallax/jsPDF) |
 | **Highlighting** | Custom DOM `TreeWalker` + greedy word alignment algorithm in `content.js` |
@@ -95,10 +95,9 @@ Lexora/
 │       ├── sidepanel.js          # App logic: capture, chat, audio engine, PDF export, settings
 │       ├── kokoro-worker.js      # Web Worker for Kokoro neural TTS (ES module, job queue + epoch cancel)
 │       ├── kokoro.web.js         # Kokoro TTS + Transformers.js runtime bundle
-│       ├── piper-worker.js       # Web Worker for Piper TTS (ONNX Runtime)
+│       ├── piper-worker.js       # Web Worker for Piper TTS (ONNX Runtime + on-demand model download)
 │       ├── piper_phonemize.*     # Piper phonemize WASM module + data
-│       ├── ort*.wasm / ort*.js   # ONNX Runtime Web binaries
-│       └── amy-low.onnx*         # Bundled Piper voice model + config
+│       └── ort*.wasm / ort*.js   # ONNX Runtime Web binaries (SIMD)
 ├── server/                       # Reserved for future backend
 ├── BUGS.md                       # Detailed bug tracker with root-cause analyses
 └── .gitignore
@@ -112,7 +111,7 @@ Lexora/
 | `content.js` | Injects the draggable overlay host (Shadow DOM), builds a `pageWords` index via `TreeWalker`, performs greedy chunk-to-page word alignment, wraps matched words in `<span>` for highlighting |
 | `sidepanel.js` | ~1100 lines covering tab management, capture workflow, markdown rendering, AI chat, dual TTS engine management (Kokoro + Piper), audio caching/prefetch pipeline, seek/highlight sync, PDF export, settings persistence |
 | `kokoro-worker.js` | ES module Web Worker with internal job queue + epoch-based cancellation. Downloads Kokoro-82M ONNX model (~92 MB quantized) from Hugging Face Hub on first use |
-| `piper-worker.js` | Classic Web Worker running ONNX Runtime with bundled `amy-low` model. Handles phonemization via `piper_phonemize` WASM, then ONNX inference |
+| `piper-worker.js` | Classic Web Worker running ONNX Runtime. Downloads Piper voice models (`amy-low`, `hfc_female-medium`) from HuggingFace on first use, caches in IndexedDB. Handles phonemization via `piper_phonemize` WASM, then ONNX inference |
 | `capture-clean.js` | Deterministic (non-AI) post-capture cleanup: Unicode normalization, whitespace compaction, consecutive duplicate removal, boilerplate pattern filtering |
 
 ---
@@ -166,7 +165,7 @@ Lexora/
 1. Switch to the **🎙 Audio** tab.
 2. Choose your engine:
    - **Kokoro**: High-quality, natural voices. Downloads a ~92 MB model on first use (cached for future sessions).
-   - **Piper**: Instant startup, lighter but more synthetic.
+   - **Piper**: Fast, lighter but more synthetic. Downloads a ~60 MB model on first use (cached in IndexedDB for future sessions).
 3. Select a voice from the dropdown (28+ options for Kokoro).
 4. Press **▶ Play**. Audio begins and words highlight on the page in real time.
 5. Use the seek slider, speed control (0.5x to 1.5x), or the **⏮ / ⏭** buttons to navigate.
@@ -204,7 +203,7 @@ Switch between **Kokoro** and **Piper** in the Audio tab's engine dropdown. The 
 ### Voice Selection
 
 - **Kokoro**: 28 voices across US/UK accents, male/female, each with a quality grade (A+ to F).
-- **Piper**: Bundled `amy-low` English voice.
+- **Piper**: Two voices — `Amy (low)` and `Google Female EN (medium)`. Downloaded on first use and cached locally.
 
 ### Content Security Policy
 
