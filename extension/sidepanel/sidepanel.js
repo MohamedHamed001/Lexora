@@ -1,217 +1,95 @@
 // sidepanel.js — Lexora Kokoro Edition
-const browserAPI =
-  (typeof chrome !== 'undefined' && chrome?.runtime?.getURL ? chrome : null) ||
-  (typeof browser !== 'undefined' && browser?.runtime?.getURL ? browser : null);
+import { state } from './js/state.js';
+import { dom } from './js/dom.js';
+import { mdToHtml, inlineMd, escHtml, encodeWAV, splitIntoChunks } from './js/utils.js';
+import { initUI, applyLesson } from './js/ui.js';
+import { initChat, addBubble } from './js/chat.js';
+import { initExport } from './js/export.js';
 
-if (!browserAPI) {
-  throw new Error('Extension runtime API not found (chrome.runtime/browser.runtime missing)');
-}
-
-let currentLesson = null;
-let config = {
-  url: 'http://127.0.0.1:1234/v1/chat/completions',
-  model: 'local-model',
-  key: '',
-  ttsEngine: 'kokoro',
-  /** Kokoro ONNX variant: q4 = larger HF cache, usually faster WASM; q8 = smaller download. */
-  kokoroDtype: 'q8',
-};
-
-// ── Debug Console ──────────────────────────────────────────────────────────
-const debugConsole = document.getElementById('debug-console');
-const debugLogLines = document.getElementById('debug-log-lines');
-
+import { initSettings, addStats } from './js/settings.js';
+// ── Debug Logging (console only) ──────────────────────────────────────────
 function logDebug(msg, type = 'info') {
-  if (debugConsole) debugConsole.style.display = 'none';
-  const line = document.createElement('div');
-  line.style.marginBottom = '2px';
-  line.style.color = type === 'error' ? '#f87171' : (type === 'warn' ? '#fbbf24' : '#86efac');
-  line.textContent = `[${new Date().toLocaleTimeString([], {hour12:false})}] ${msg}`;
-  debugLogLines.appendChild(line);
-  debugLogLines.parentElement.scrollTop = debugLogLines.parentElement.scrollHeight;
-  console.log(`[Lexora] ${msg}`);
+  if (type === 'error') console.error(`[Lexora] ${msg}`);
+  else if (type === 'warn') console.warn(`[Lexora] ${msg}`);
+  else console.debug(`[Lexora] ${msg}`);
 }
 
-// ── Tab switching ──────────────────────────────────────────────────────────
-document.querySelectorAll('.tab').forEach(tab => {
-  tab.onclick = () => {
-    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-    tab.classList.add('active');
-    const id = tab.dataset.tab;
-    document.querySelectorAll('.tab-panel').forEach(p => p.style.display = 'none');
-    const panel = document.getElementById(`${id}-panel`);
-    if (panel) panel.style.display = id === 'chat' ? 'flex' : 'block';
-  };
-});
-
-// ── Capture button ─────────────────────────────────────────────────────────
-const captureBtn    = document.getElementById('capture-btn');
-const captureStatus = document.getElementById('capture-status');
-const popOutBtn     = document.getElementById('pop-out-btn');
-
-// Refresh UI if storage updates (e.g. overlay/sidepanel sync).
-browserAPI.storage.onChanged.addListener((changes, areaName) => {
-  if (areaName !== 'local') return;
-  if (changes.currentLesson?.newValue) {
-    currentLesson = changes.currentLesson.newValue;
-    applyLesson(currentLesson);
-  }
-});
-
-if (popOutBtn) {
-  if (window.parent !== window) {
-    popOutBtn.style.display = 'none';
-  }
-
-  popOutBtn.addEventListener('click', () => {
-    browserAPI.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-      if (tabs[0]) {
-        browserAPI.tabs.sendMessage(tabs[0].id, { action: 'toggleOverlay' });
-        window.close();
-      }
-    });
-  });
-}
-
-captureBtn.addEventListener('click', () => {
-  captureBtn.textContent   = '⏳ Scanning…';
-  captureBtn.disabled      = true;
-  captureStatus.textContent = '';
-
-  browserAPI.runtime.sendMessage({ action: 'triggerDeepCapture' }, (resp) => {
-    captureBtn.disabled = false;
-
-    if (resp && resp.success) {
-      currentLesson = resp.data;
-      browserAPI.storage.local.set({ currentLesson });
-      applyLesson(currentLesson);
-      captureBtn.textContent = '✅ Captured';
-      if (captureStatus) captureStatus.textContent = '';
-      setTimeout(() => { captureBtn.textContent = '✨ Capture'; }, 2500);
-    } else {
-      captureBtn.textContent = '✨ Capture';
-      captureStatus.textContent = '⚠️ ' + (resp?.error || 'No content found on this page.');
-    }
-  });
-});
-
-// ── Apply lesson to all tabs ───────────────────────────────────────────────
-function applyLesson(lesson) {
-  if (!lesson) return;
-
-  resetNarrationForNewLesson();
-
-  const urlEl = document.getElementById('lesson-url');
-  const titleEl = document.getElementById('lesson-title');
-  const lessonHeader = document.getElementById('lesson-header');
-
-  if (urlEl) {
-    try { urlEl.textContent = new URL(lesson.url).hostname; }
-    catch (_) { urlEl.textContent = lesson.url || ''; }
-  }
-  if (titleEl) titleEl.textContent = lesson.title || 'Unnamed';
-  if (lessonHeader) lessonHeader.style.display = 'block';
-
-  document.getElementById('lesson-text').innerHTML = mdToHtml(lesson.content || '');
-
-  const info = document.getElementById('export-info');
-  if (info) info.textContent = `📖 "${lesson.title}" — ready to export.`;
-
-  const msgs = document.getElementById('chat-messages');
-  msgs.innerHTML = `<div class="ai-bubble">✅ Captured <strong>${escHtml(lesson.title)}</strong>. Ask me anything!</div>`;
-}
-
-// ── Simple Markdown Parsing ────────────────────────────────────────────────
-function mdToHtml(md) {
-  const lines = (md || '').split('\n');
-  let html = '', inList = false;
-
-  lines.forEach(raw => {
-    const line = raw.trimEnd();
-    if (/^#{2,}\s+/.test(line)) {
-      if (inList) { html += '</ul>'; inList = false; }
-      html += `<h3 class="md-h3">${inlineMd(escHtml(line.replace(/^#{2,}\s+/, '')))}</h3>`;
-    } else if (/^#\s+/.test(line)) {
-      if (inList) { html += '</ul>'; inList = false; }
-      html += `<h2 class="md-h2">${inlineMd(escHtml(line.replace(/^#\s+/, '')))}</h2>`;
-    } else if (/^[-*]\s+/.test(line)) {
-      if (!inList) { html += '<ul class="md-ul">'; inList = true; }
-      html += `<li>${inlineMd(escHtml(line.replace(/^[-*]\s+/, '')))}</li>`;
-    } else if (line.trim() === '') {
-      if (inList) { html += '</ul>'; inList = false; }
-      html += '<div style="height:0.4em"></div>';
-    } else {
-      if (inList) { html += '</ul>'; inList = false; }
-      html += `<p class="md-p">${inlineMd(escHtml(line))}</p>`;
-    }
-  });
-
-  if (inList) html += '</ul>';
-  return html;
-}
-
-function inlineMd(s) {
-  return s
-    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
-    .replace(/\*(.+?)\*/g,     '<em>$1</em>')
-    .replace(/`(.+?)`/g,       '<code class="md-code">$1</code>');
-}
-
-function escHtml(s) {
-  return (s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-}
-
-// ── AI Chat ────────────────────────────────────────────────────────────────
-document.getElementById('chat-input').addEventListener('keypress', e => {
-  if (e.key !== 'Enter' || !e.target.value.trim()) return;
-  const q = e.target.value.trim();
-  e.target.value = '';
-
-  addBubble('user', q);
-  if (!currentLesson) { addBubble('ai', '❌ Please capture a page first!'); return; }
-
-  const headers = { 'Content-Type': 'application/json' };
-  if (config.key) headers['Authorization'] = `Bearer ${config.key}`;
-
-  const thinking = addBubble('ai', '…');
-  browserAPI.runtime.sendMessage({
-    action: 'proxyFetch',
-    url:    config.url,
-    method: 'POST',
-    headers: headers,
-    body: {
-      model: config.model,
-      messages: [
-        { role: 'system', content: `You are a concise study assistant. Answer based on this lesson:\n\nTitle: ${currentLesson.title}\n\n${currentLesson.content}` },
-        { role: 'user', content: q },
-      ],
-      temperature: 0.7,
-    },
-  }, resp => {
-    if (resp?.success) {
-      thinking.innerHTML = mdToHtml(resp.data.choices[0].message.content);
-    } else {
-      thinking.innerText = `❌ Error: ${resp?.error || 'Could not reach API.'}`;
-    }
-    document.getElementById('content-container').scrollTop = 99999;
-  });
-});
-
-function addBubble(role, text) {
-  const box = document.getElementById('chat-messages');
-  const el  = document.createElement('div');
-  el.className = role === 'user' ? 'user-bubble' : 'ai-bubble';
-  el.innerText  = text;
-  box.appendChild(el);
-  document.getElementById('content-container').scrollTop = 99999;
-  return el;
-}
+// Init modularized parts
+initUI();
+initChat();
+initExport();
 
 // ═══════════════════════════════════════════════════════════════════════════
-// ── Kokoro Audio Engine ───────────────────────────────────────────────────
+// ── Audio Engine & TTS Orchestrator ───────────────────────────────────────
 // ═══════════════════════════════════════════════════════════════════════════
+
 
 const synth = window.speechSynthesis;
+
+// NOTE: This file historically used a set of "module globals" (config/currentLesson/etc).
+// Some refactors moved state into `state.js`; missing declarations cause runtime crashes.
+// Keep these declarations to preserve existing control flow.
+let config = state.config;
+let seekerTimer = null;
+let currentAudioElement = null;
+let googleVoice = null;
+let sysUtteranceDurationEst = 0;
+let sysUtteranceT0 = 0;
+let sysUtteranceHighlight = false;
+let currentChunkText = '';
+let currentChunkWords = [];
+let lastHighlightedWord = -1;
+
+let pendingAutoplayRetry = false;
+function armAutoplayRetry() {
+  if (pendingAutoplayRetry) return;
+  pendingAutoplayRetry = true;
+  statusLabel.textContent = 'Tap anywhere once to start audio (browser autoplay policy).';
+}
+function disarmAutoplayRetry() {
+  pendingAutoplayRetry = false;
+}
+function tryAutoplayRetryOnce() {
+  if (!pendingAutoplayRetry) return;
+  disarmAutoplayRetry();
+  try {
+    if (currentAudioElement && typeof currentAudioElement.play === 'function') {
+      const p = currentAudioElement.play();
+      if (p && typeof p.catch === 'function') p.catch(() => {});
+      return;
+    }
+  } catch (_) {}
+  try { playBtn?.click(); } catch (_) {}
+}
+document.addEventListener('pointerdown', tryAutoplayRetryOnce, { capture: true, once: false });
+document.addEventListener('keydown', tryAutoplayRetryOnce, { capture: true, once: false });
+
+function startPlayback() {
+  if (!state.currentLesson) return;
+  if (speaking) return;
+
+  speaking = true;
+  isPaused = false;
+  playBtn.textContent = '⏸ Pause';
+
+  if (sentences.length === 0) {
+    const plain = (state.currentLesson.content || '')
+      .replace(/^#{1,6}\s+/gm, '')
+      .replace(/\*\*(.+?)\*\*/g, '$1')
+      .replace(/\*(.+?)\*/g, '$1')
+      .replace(/`(.+?)`/g, '$1')
+      .replace(/^[-*]\s+/gm, '');
+    const maxChunk = config.ttsEngine === 'piper' ? PIPER_CHUNK_MAX_LEN : 120;
+    sentences = splitIntoChunks(plain, maxChunk);
+  }
+
+  if (sentenceIdx >= sentences.length) {
+    sentenceIdx = 0;
+  }
+
+  speakNext();
+}
+
 if (synth.addEventListener) {
   synth.addEventListener('voiceschanged', () => {
     if (config.ttsEngine === 'piper') populateVoicePicker([]);
@@ -220,97 +98,24 @@ if (synth.addEventListener) {
 let speaking = false;
 let isPaused = false;
 let sentences = [], sentenceIdx = 0;
-let googleVoice = null;
+// ── State mappings for backwards compatibility in TTS ───────────────────
+// Replace local TTS variables with state
+const rateSlider = dom.rateSlider;
+const rateLabel = dom.rateLabel;
+const playBtn = dom.playBtn;
+const prevBtn = dom.prevBtn;
+const nextBtn = dom.nextBtn;
+const voicePicker = dom.voicePicker;
+const seekBar = dom.seekBar;
+const statusLabel = dom.statusLabel;
+const downloadProgress = dom.downloadProgress;
+const downloadBar = dom.downloadBar;
+const downloadText = dom.downloadText;
+const ttsEngineSelect = dom.ttsEngineSelect;
+const kokoroDtypeSelect = dom.kokoroDtypeSelect;
+const kokoroDtypeRow = dom.kokoroDtypeRow;
+const browserAPI = state.browserAPI;
 
-// Float32Array → WAV Blob
-function encodeWAV(samples, sampleRate = 24000) {
-  const buf = new ArrayBuffer(44 + samples.length * 2);
-  const view = new DataView(buf);
-  const writeString = (off, s) => { for (let i=0; i<s.length; i++) view.setUint8(off+i, s.charCodeAt(i)); };
-  writeString(0, 'RIFF');
-  view.setUint32(4, 36 + samples.length * 2, true);
-  writeString(8, 'WAVE');
-  writeString(12, 'fmt ');
-  view.setUint32(16, 16, true);
-  view.setUint16(20, 1, true);
-  view.setUint16(22, 1, true);
-  view.setUint32(24, sampleRate, true);
-  view.setUint32(28, sampleRate * 2, true);
-  view.setUint16(32, 2, true);
-  view.setUint16(34, 16, true);
-  writeString(36, 'data');
-  view.setUint32(40, samples.length * 2, true);
-  let offset = 44;
-  for (let i = 0; i < samples.length; i++, offset += 2) {
-    let s = Math.max(-1, Math.min(1, samples[i]));
-    view.setInt16(offset, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
-  }
-  return new Blob([buf], { type: 'audio/wav' });
-}
-
-/**
- * Split text into short chunks for faster synthesis.
- * Targets ~80-150 chars per chunk, breaking at natural pause points.
- */
-function splitIntoChunks(text, maxLen = 120) {
-  if (!text || !text.trim()) return [text || ''];
-
-  // First split into sentences
-  const rawSentences = text.match(/[^.!?…]+[.!?…]+(?:\s|$)/g) || [text];
-  const chunks = [];
-
-  for (const sent of rawSentences) {
-    const trimmed = sent.trim();
-    if (!trimmed) continue;
-
-    if (trimmed.length <= maxLen) {
-      chunks.push(trimmed);
-      continue;
-    }
-
-    // Long sentence — split at clause boundaries
-    const clauses = trimmed.split(/(?<=[,;:–—])\s+/);
-    let buf = '';
-    for (const clause of clauses) {
-      if (buf && (buf.length + clause.length) > maxLen) {
-        chunks.push(buf.trim());
-        buf = clause;
-      } else {
-        buf = buf ? buf + ' ' + clause : clause;
-      }
-    }
-    if (buf.trim()) chunks.push(buf.trim());
-  }
-
-  return chunks.length ? chunks : [text];
-}
-
-const rateSlider  = document.getElementById('rate-slider');
-const rateLabel   = document.getElementById('rate-label');
-const playBtn     = document.getElementById('play-btn');
-const prevBtn     = document.getElementById('prev-btn');
-const nextBtn     = document.getElementById('next-btn');
-const voicePicker = document.getElementById('voice-picker');
-const voiceHintEl = document.getElementById('voice-hint');
-const refreshVoicesBtn = document.getElementById('refresh-voices-btn');
-const seekBar     = document.getElementById('seek-bar');
-const statusLabel = document.getElementById('status-label');
-const downloadProgress = document.getElementById('download-progress');
-const downloadBar      = document.getElementById('download-bar');
-const downloadText     = document.getElementById('download-text');
-const ttsEngineSelect  = document.getElementById('tts-engine');
-const kokoroDtypeSelect = document.getElementById('kokoro-dtype');
-const kokoroDtypeRow = document.getElementById('kokoro-dtype-row');
-
-let currentAudioElement = null;
-let seekerTimer = null;
-let currentChunkWords = [];
-let currentChunkText = '';
-let lastHighlightedWord = -1;
-/** Word highlight while using SpeechSynthesis (no HTML Audio currentTime). */
-let sysUtteranceHighlight = false;
-let sysUtteranceT0 = 0;
-let sysUtteranceDurationEst = 0;
 
 // Piper engine — on-demand models registry
 /**
@@ -528,7 +333,7 @@ function handlePiperWorkerMessage(e) {
       logDebug(`Piper synthesis error: ${msg.error}`, 'error');
       statusLabel.textContent = '';
       if (speaking && msg.requestId === currentSynthesisId) {
-        sentenceIdx++;
+        advanceSentence();
         speakNext();
       }
     }
@@ -607,6 +412,9 @@ function updateSeekBar() {
   if (!seekBarDragging) {
     seekBar.value = progress;
   }
+  
+  // Periodically save progress while playing
+  saveReadingProgress();
 
   // Word-level highlight — weighted by character count for natural pacing
   const durForWords =
@@ -814,8 +622,6 @@ function populateVoicePicker(availableVoiceIds) {
   voicePicker.innerHTML = '';
 
   if (config.ttsEngine === 'piper') {
-    if (voiceHintEl) voiceHintEl.style.display = 'none';
-
     // Show on-demand downloadable Piper voices
     const piperGroup = document.createElement('optgroup');
     piperGroup.label = 'Piper (offline — downloads on first use)';
@@ -837,9 +643,8 @@ function populateVoicePicker(availableVoiceIds) {
     return;
   }
 
-  if (voiceHintEl) voiceHintEl.style.display = 'none';
-
   // Group 1: Kokoro voices by category
+
   const groups = {
     '🇺🇸 American Female':  [],
     '🇺🇸 American Male':    [],
@@ -1094,17 +899,7 @@ function cancelAudio(clearCache = false) {
   }
 }
 
-/** New capture / lesson: clear TTS chunk state so Play rebuilds from fresh content. */
-function resetNarrationForNewLesson() {
-  cancelAudio(true);
-  sentences = [];
-  sentenceIdx = 0;
-  speaking = false;
-  isPaused = false;
-  needsResynthOnResume = false;
-  if (playBtn) playBtn.textContent = '▶ Play';
-  seekBar.value = 0;
-}
+
 
 function sendClearHighlight(fullReset = false) {
   currentChunkWords = [];
@@ -1168,7 +963,8 @@ function playFromBlob(blob, sampleRate, voiceId) {
   const url = URL.createObjectURL(blob);
   currentAudioElement = new Audio(url);
   currentAudioElement.playbackRate = parseFloat(rateSlider.value);
-  currentAudioElement.preservesPitch = true;
+  try { currentAudioElement.preservesPitch = true; } catch (_) {}
+  try { currentAudioElement.muted = false; currentAudioElement.volume = 1; } catch (_) {}
   const pcmBytes = Math.max(0, blob.size - 44);
   currentAudioElement._lexoraDur = pcmBytes / (sampleRate * 2);
 
@@ -1192,7 +988,7 @@ function playFromBlob(blob, sampleRate, voiceId) {
     currentAudioElement = null;
     sendClearHighlight();
     if (speaking) {
-      sentenceIdx++;
+      advanceSentence();
       speakNext();
     } else {
       stopSeekerTimer();
@@ -1204,7 +1000,7 @@ function playFromBlob(blob, sampleRate, voiceId) {
     if (p && typeof p.catch === 'function') {
       p.catch((err) => {
         logDebug(`Audio play blocked: ${err?.message || err}`, 'error');
-        statusLabel.textContent = 'Tap Play again if audio did not start (browser autoplay policy).';
+        armAutoplayRetry();
       });
     }
     startSeekerTimer();
@@ -1268,7 +1064,7 @@ function handleKokoroWorkerMessage(e) {
     } else {
       logDebug(`Synthesis error: ${msg.error}`, 'error');
       statusLabel.textContent = '';
-      if (speaking) { sentenceIdx++; speakNext(); }
+      if (speaking) { advanceSentence(); speakNext(); }
     }
   } else if (msg.type === 'log') {
     logDebug(`Worker: ${msg.message}`);
@@ -1345,7 +1141,10 @@ nextBtn.addEventListener('click', () => {
 });
 
 playBtn.addEventListener('click', async () => {
-  if (!currentLesson) return;
+  if (!state.currentLesson) return;
+
+  // Ignore duplicate triggers while loading a model (auto-play can fire twice: message + init).
+  if (playBtn.disabled || /⏳\s*Loading/i.test(playBtn.textContent || '')) return;
 
   if (speaking) {
     if (currentAudioElement && typeof currentAudioElement.pause === 'function') {
@@ -1388,22 +1187,41 @@ playBtn.addEventListener('click', async () => {
     return;
   }
 
-  speaking = true;
-  isPaused = false;
-  playBtn.textContent = '⏸ Pause';
-  
-  if (sentences.length === 0) {
-    const plain = (currentLesson.content || '')
-      .replace(/^#{1,6}\s+/gm, '')
-      .replace(/\*\*(.+?)\*\*/g, '$1')
-      .replace(/\*(.+?)\*/g, '$1')
-      .replace(/`(.+?)`/g, '$1')
-      .replace(/^[-*]\s+/gm, '');
-    const maxChunk = config.ttsEngine === 'piper' ? PIPER_CHUNK_MAX_LEN : 120;
-    sentences = splitIntoChunks(plain, maxChunk);
-  }
-  speakNext();
+  startPlayback();
 });
+
+// ── Shared system-voice synthesis helper ─────────────────────────────────
+/** Speaks `text` via Web Speech API with the given voice and rate. */
+function speakWithSystemVoice(text, voice, rate) {
+  currentChunkText = text;
+  currentChunkWords = text.split(/\s+/).filter(Boolean);
+  lastHighlightedWord = -1;
+  const wordCount = currentChunkWords.length || 1;
+  sysUtteranceDurationEst = Math.max(1.2, (text.length / 13 + wordCount * 0.28) / Math.max(0.35, rate));
+
+  const utt = new SpeechSynthesisUtterance(text);
+  if (voice) utt.voice = voice;
+  utt.rate = rate;
+  utt.onstart = () => {
+    sysUtteranceHighlight = true;
+    sysUtteranceT0 = performance.now();
+    startSeekerTimer();
+  };
+  utt.onend = () => {
+    sysUtteranceHighlight = false;
+    advanceSentence();
+    speakNext();
+  };
+  utt.onerror = (ev) => {
+    sysUtteranceHighlight = false;
+    const err = ev && ev.error;
+    if (err === 'interrupted' || err === 'canceled' || err === 'cancelled') return;
+    advanceSentence();
+    speakNext();
+  };
+  synth.speak(utt);
+  currentAudioElement = null;
+}
 
 async function speakNext() {
   if (!speaking || sentenceIdx >= sentences.length) {
@@ -1428,42 +1246,14 @@ async function speakNext() {
       if (!picked.voice) {
         statusLabel.textContent = 'Voice missing — click ↻ Refresh voices or wait for the list to load.';
         if (speaking) {
-          sentenceIdx++;
+          advanceSentence();
           speakNext();
         }
         return;
       }
       playBtn.textContent = '⏸ Pause';
       statusLabel.textContent = '';
-      currentChunkText = text;
-      currentChunkWords = text.split(/\s+/).filter(Boolean);
-      lastHighlightedWord = -1;
-      const rate = parseFloat(rateSlider.value);
-      const wordCount = currentChunkWords.length || 1;
-      sysUtteranceDurationEst = Math.max(1.2, (text.length / 13 + wordCount * 0.28) / Math.max(0.35, rate));
-
-      const utt = new SpeechSynthesisUtterance(text);
-      utt.voice = picked.voice;
-      utt.rate = rate;
-      utt.onstart = () => {
-        sysUtteranceHighlight = true;
-        sysUtteranceT0 = performance.now();
-        startSeekerTimer();
-      };
-      utt.onend = () => {
-        sysUtteranceHighlight = false;
-        sentenceIdx++;
-        speakNext();
-      };
-      utt.onerror = (ev) => {
-        sysUtteranceHighlight = false;
-        const err = ev && ev.error;
-        if (err === 'interrupted' || err === 'canceled' || err === 'cancelled') return;
-        sentenceIdx++;
-        speakNext();
-      };
-      synth.speak(utt);
-      currentAudioElement = null;
+      speakWithSystemVoice(text, picked.voice, parseFloat(rateSlider.value));
       return;
     }
 
@@ -1472,6 +1262,7 @@ async function speakNext() {
     playBtn.textContent = '⏳ Loading…';
     const ok = await loadPiperModel(picked.modelKey || 'amy');
     playBtn.disabled = false;
+
     if (!ok || !speaking) {
       playBtn.textContent = '▶ Play';
       return;
@@ -1523,132 +1314,68 @@ async function speakNext() {
     statusLabel.textContent = `Synthesizing ${synthCompletedCount}/${synthTotalCount}…`;
   } else {
     // ── Native Speech Fallback (should be rare) ─────────────────────────
-    currentChunkText = text;
-    currentChunkWords = text.split(/\s+/).filter(Boolean);
-    lastHighlightedWord = -1;
-    const rate = parseFloat(rateSlider.value);
-    const wordCount = currentChunkWords.length || 1;
-    sysUtteranceDurationEst = Math.max(1.2, (text.length / 13 + wordCount * 0.28) / Math.max(0.35, rate));
-
-    const utt = new SpeechSynthesisUtterance(text);
-    utt.rate = rate;
-    utt.onstart = () => {
-      sysUtteranceHighlight = true;
-      sysUtteranceT0 = performance.now();
-      startSeekerTimer();
-    };
-    utt.onend = () => {
-      sysUtteranceHighlight = false;
-      sentenceIdx++;
-      speakNext();
-    };
-    utt.onerror = (ev) => {
-      sysUtteranceHighlight = false;
-      const err = ev && ev.error;
-      if (err === 'interrupted' || err === 'canceled' || err === 'cancelled') return;
-      sentenceIdx++;
-      speakNext();
-    };
-    synth.speak(utt);
-    currentAudioElement = null;
+    speakWithSystemVoice(text, null, parseFloat(rateSlider.value));
   }
 }
 
-// ── PDF Export ─────────────────────────────────────────────────────────────
-document.getElementById('export-pdf').addEventListener('click', () => {
-  if (!currentLesson) return;
-  const JsPDF = (window.jspdf && window.jspdf.jsPDF) || window.jsPDF;
-  if (!JsPDF) return;
-  try {
-    const doc = new JsPDF({ unit: 'mm', format: 'a4' });
-    const PW = doc.internal.pageSize.getWidth();
-    const PH = doc.internal.pageSize.getHeight();
-    const M  = 14, CW = PW - M * 2;
-    let y    = M + 4;
-    doc.setFont('helvetica', 'bold');
-    doc.setFontSize(20);
-    doc.splitTextToSize(currentLesson.title, CW).forEach(line => {
-      if (y > PH - M) { doc.addPage(); y = M + 4; }
-      doc.text(line, M, y);
-      y += 9;
+initSettings();
+
+// Export resetNarrationForNewLesson for ui.js to use
+export function resetNarrationForNewLesson() {
+  cancelAudio(true);
+  sentences = [];
+  sentenceIdx = 0;
+  speaking = false;
+  isPaused = false;
+  needsResynthOnResume = false;
+  
+  if (playBtn) playBtn.textContent = '▶ Play';
+  seekBar.value = 0;
+
+  // Restore reading progress for the new lesson
+  if (state.currentLesson && state.currentLesson.url && state.currentLesson.title !== 'Selected Text') {
+    const progressKey = 'progress_' + state.currentLesson.url;
+    browserAPI.storage.local.get([progressKey], (res) => {
+      if (res[progressKey] !== undefined) {
+        // We defer applying it slightly because sentences[] gets populated when user clicks Play or via other logic.
+        // But we can set sentenceIdx now so that playAudio() starts from there.
+        sentenceIdx = res[progressKey];
+        // Ensure UI reflects the position if total sentences is known
+        if (sentences.length > 0) {
+          seekBar.value = ((sentenceIdx) / sentences.length) * 100;
+        }
+      }
     });
-    doc.setFontSize(8);
-    doc.text(currentLesson.url || '', M, y);
-    y += 10;
-    const body = (currentLesson.content || '').replace(/^#{1,6}\s+/gm, '');
-    doc.setFont('helvetica', 'normal');
-    doc.setFontSize(11);
-    doc.splitTextToSize(body, CW).forEach(line => {
-      if (y > PH - M - 10) { doc.addPage(); y = M + 4; }
-      doc.text(line, M, y);
-      y += 6.5;
-    });
-    doc.save(`${currentLesson.title.slice(0, 30)}.pdf`);
-  } catch (err) { console.error(err); }
-});
-
-// ── Settings ─────────────────────────────────────────────────────────────────
-browserAPI.storage.local.get(['currentLesson', 'lexoraConfig'], res => {
-  if (res.currentLesson) {
-    currentLesson = res.currentLesson;
-    applyLesson(currentLesson);
   }
-  if (res.lexoraConfig) {
-    config = { ...config, ...res.lexoraConfig };
-    // Cloud TTS feature was removed — ensure we don't keep stale secrets.
-    delete config.ttsKey;
-    delete config.aiCleanupOnCapture;
+}
+
+// Debounce-save reading progress
+let progressSaveTimeout = null;
+function saveReadingProgress() {
+  if (!state.currentLesson || !state.currentLesson.url) return;
+  if (state.currentLesson.title === 'Selected Text') return;
+  clearTimeout(progressSaveTimeout);
+  progressSaveTimeout = setTimeout(() => {
+    const progressKey = 'progress_' + state.currentLesson.url;
+    browserAPI.storage.local.set({ [progressKey]: sentenceIdx });
+  }, 1000);
+}
+
+function advanceSentence() {
+  let wordsRead = currentChunkWords ? currentChunkWords.length : 1;
+  let timeMs = 0;
+  if (currentAudioElement) {
+    timeMs = (currentAudioElement._lexoraDur || currentAudioElement.duration || 0) * 1000;
+  } else if (sysUtteranceDurationEst) {
+    timeMs = sysUtteranceDurationEst * 1000;
   }
-  if (config.kokoroDtype !== 'q4' && config.kokoroDtype !== 'q8') config.kokoroDtype = 'q8';
-  document.getElementById('setting-url').value = config.url || '';
-  document.getElementById('setting-model').value = config.model || '';
-  document.getElementById('setting-key').value = config.key || '';
-  if (ttsEngineSelect) ttsEngineSelect.value = config.ttsEngine || 'kokoro';
-  if (kokoroDtypeSelect) kokoroDtypeSelect.value = config.kokoroDtype || 'q8';
-  updateKokoroDtypeRowVisibility();
-  initVoice();
-});
-
-document.getElementById('save-settings-btn').addEventListener('click', () => {
-  config.url = document.getElementById('setting-url').value.trim();
-  config.model = document.getElementById('setting-model').value.trim();
-  config.key = document.getElementById('setting-key').value.trim();
-  browserAPI.storage.local.set({ lexoraConfig: config }, () => {
-    const status = document.getElementById('settings-status');
-    status.textContent = '✅ Config Saved';
-    initVoice();
-    setTimeout(() => { status.textContent = ''; }, 2000);
-  });
-});
-
-if (ttsEngineSelect) {
-  ttsEngineSelect.addEventListener('change', () => {
-    const nextEngine = ttsEngineSelect.value === 'piper' ? 'piper' : 'kokoro';
-    config.ttsEngine = nextEngine;
-    cancelAudio(true);
-    showDownloadProgress(false);
-    populateVoicePicker(nextEngine === 'kokoro' ? Object.keys(KOKORO_VOICE_META) : []);
-    updateKokoroDtypeRowVisibility();
-    browserAPI.storage.local.set({ lexoraConfig: config });
-  });
+  if (!isFinite(timeMs) || isNaN(timeMs)) timeMs = 0;
+  addStats(wordsRead, timeMs);
+  sentenceIdx++;
+  saveReadingProgress();
 }
 
-if (kokoroDtypeSelect) {
-  kokoroDtypeSelect.addEventListener('change', () => {
-    const next = kokoroDtypeSelect.value === 'q4' ? 'q4' : 'q8';
-    if (next === config.kokoroDtype) return;
-    config.kokoroDtype = next;
-    disposeKokoroWorkers();
-    browserAPI.storage.local.set({ lexoraConfig: config });
-  });
-}
 
-if (refreshVoicesBtn) {
-  refreshVoicesBtn.addEventListener('click', () => {
-    primeSpeechSynthesisVoices();
-    if (config.ttsEngine === 'piper') populateVoicePicker([]);
-  });
-}
 
 // ── Minimized overlay: parent page forwards prev / play / next via postMessage ──
 window.addEventListener('message', (event) => {
@@ -1677,3 +1404,34 @@ if (playBtn) {
   mo.observe(playBtn, { childList: true, subtree: true, characterData: true });
   syncMiniPlayerChrome();
 }
+
+// ── Keyboard Shortcuts ──────────────────────────────────────────────────────
+document.addEventListener('keydown', (e) => {
+  const tag = document.activeElement?.tagName.toLowerCase();
+  const isEditable = tag === 'input' || tag === 'textarea' || tag === 'select';
+  if (isEditable) return; // Don't intercept when user is typing
+
+  if (e.code === 'Space') {
+    e.preventDefault();
+    playBtn?.click();
+  } else if (e.code === 'ArrowLeft') {
+    e.preventDefault();
+    prevBtn?.click();
+  } else if (e.code === 'ArrowRight') {
+    e.preventDefault();
+    nextBtn?.click();
+  }
+});
+
+// Expose audio functions for other modules
+window.lexoraAudio = {
+  updateKokoroDtypeRowVisibility,
+  initVoice,
+  cancelAudio,
+  showDownloadProgress,
+  disposeKokoroWorkers,
+  resetNarrationForNewLesson,
+  advanceSentence,
+  startPlayback
+};
+

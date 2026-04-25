@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>AI-Study Companion</title>
+  <title>Lexora</title>
   <link rel="stylesheet" href="sidepanel.css">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -15,7 +15,7 @@
   <div class="panel-header">
     <div class="header-top">
       <div>
-        <div class="app-name">✦ AI-Study Companion</div>
+        <div class="app-name">✦ Lexora</div>
         <div id="lesson-url">Click capture to start</div>
       </div>
       <button id="capture-btn" class="capture-btn">
@@ -58,6 +58,10 @@
 
     <!-- CONTENT TAB -->
     <div id="content-panel" class="tab-panel" style="display:none;">
+      <div class="content-toolbar" style="display:flex; gap:8px; margin-bottom: 12px; align-items: center;">
+        <input type="text" id="content-search" class="chat-input" placeholder="Search text..." style="flex:1;">
+        <button id="summarize-btn" class="glass action-btn" style="flex:none; padding: 8px 12px; font-size: 0.8rem;">✨ Summarize</button>
+      </div>
       <div id="lesson-text" style="line-height:1.65;font-size:0.88rem;color:var(--text-primary);">
         <p style="color:var(--text-dim);">Nothing captured yet. Click ✨ Capture above.</p>
       </div>
@@ -69,14 +73,14 @@
       <p style="color:var(--text-dim);font-size:0.72rem;margin-bottom:1rem;line-height:1.4;">Choose your local voice engine. <strong>Piper</strong> starts instantly but sounds more synthetic; <strong>Kokoro</strong> is more natural and human‑like, but takes a moment to load.</p>
 
       <label style="font-size:0.78rem;color:var(--text-dim);display:block;margin-bottom:6px;">Engine:</label>
-      <select id="tts-engine" style="width:100%;padding:8px;border-radius:6px;background:var(--surface-highest);border:1px solid var(--outline-variant);color:white;font-family:var(--font-body);font-size:0.8rem;outline:none;margin-bottom:1rem;">
+      <select id="tts-engine" style="width:100%;padding:8px;border-radius:6px;background:var(--surface-highest);border:1px solid var(--outline-variant);font-family:var(--font-body);font-size:0.8rem;outline:none;margin-bottom:1rem;">
         <option value="kokoro">Kokoro</option>
         <option value="piper">Piper</option>
       </select>
 
       <div id="kokoro-dtype-row" style="margin-bottom:1rem;">
         <label style="font-size:0.78rem;color:var(--text-dim);display:block;margin-bottom:6px;">Kokoro model (disk vs speed):</label>
-        <select id="kokoro-dtype" style="width:100%;padding:8px;border-radius:6px;background:var(--surface-highest);border:1px solid var(--outline-variant);color:white;font-family:var(--font-body);font-size:0.8rem;outline:none;">
+        <select id="kokoro-dtype" style="width:100%;padding:8px;border-radius:6px;background:var(--surface-highest);border:1px solid var(--outline-variant);font-family:var(--font-body);font-size:0.8rem;outline:none;">
           <option value="q8">Q8 — smaller download (~92 MB), heavier CPU work</option>
           <option value="q4">Q4 — larger cache (~300 MB), faster startup &amp; speech</option>
         </select>
@@ -93,7 +97,7 @@
       <label style="font-size:0.78rem;color:var(--text-dim);display:block;margin-bottom:6px;">
         Speed: <span id="rate-label">1.15×</span>
       </label>
-      <input type="range" id="rate-slider" min="0.5" max="1.5" step="0.05" value="1.15"
+      <input type="range" id="rate-slider" min="0.5" max="2.5" step="0.05" value="1.15"
         style="width:100%;accent-color:#a9a4ff;margin-bottom:1.2rem;">
 
       <input type="range" id="seek-bar" class="seek-slider" min="0" max="100" value="0">
@@ -104,20 +108,13 @@
         <button id="next-btn" class="glass action-btn" style="flex:1;">Next ⏭</button>
       </div>
 
-      <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;flex-wrap:wrap;">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;">
         <label style="font-size:0.78rem;color:var(--text-dim);margin:0;">Voice:</label>
-        <button type="button" id="refresh-voices-btn" class="glass action-btn" style="padding:4px 10px;font-size:0.72rem;margin-left:auto;">↻ Refresh voices</button>
       </div>
-      <p id="voice-hint" style="font-size:0.68rem;color:var(--text-dim);margin:-4px 0 8px;line-height:1.35;display:none;">Uses your Mac’s speech voices (same engine as before). Comic/novelty voices are grouped at the bottom. Click ↻ Refresh if the list is empty; use Find (⌘F / Ctrl+F) to jump to “Google”.</p>
-      <select id="voice-picker" style="width:100%;padding:8px;border-radius:6px;background:var(--surface-highest);border:1px solid var(--outline-variant);color:white;font-family:var(--font-body);font-size:0.8rem;outline:none;"></select>
+      <select id="voice-picker" style="width:100%;padding:8px;border-radius:6px;background:var(--surface-highest);border:1px solid var(--outline-variant);font-family:var(--font-body);font-size:0.8rem;outline:none;"></select>
       
       <div id="status-label" style="font-size:0.75rem;color:var(--text-dim);text-align:center;margin-top:12px;min-height:16px;"></div>
-      
-      <!-- Debug Console -->
-      <div id="debug-console" style="margin-top:15px; background: rgba(0,0,0,0.3); border-radius: 6px; padding: 8px; font-family: monospace; font-size: 10px; color: #86efac; max-height: 100px; overflow-y: auto; display: none;">
-        <div style="color: #94a3b8; border-bottom: 1px solid #334155; margin-bottom: 4px; padding-bottom: 2px;">SYS_LOG:</div>
-        <div id="debug-log-lines"></div>
-      </div>
+      <p style="font-size:0.65rem;color:var(--text-dim);text-align:center;margin-top:8px;">⌨️ Space = Play/Pause &nbsp;·&nbsp; ← / → = Prev / Next</p>
     </div>
 
     <!-- EXPORT TAB -->
@@ -151,6 +148,39 @@
         </div>
       </div>
 
+      <h3 style="font-size:0.85rem;margin-bottom:0.8rem;color:var(--text-primary);border-bottom:1px solid var(--outline-variant);padding-bottom:4px;">🎨 Appearance</h3>
+      <div style="display:flex; align-items:center; gap:8px; margin-bottom:1.5rem;">
+        <input type="checkbox" id="setting-theme" style="accent-color:var(--primary-glow);width:16px;height:16px;">
+        <label for="setting-theme" style="font-size:0.8rem;color:var(--text-primary);">Light Theme</label>
+      </div>
+      
+      <h3 style="font-size:0.85rem;margin-bottom:0.8rem;color:var(--text-primary);border-bottom:1px solid var(--outline-variant);padding-bottom:4px;">🤖 Automation</h3>
+      <div style="display:flex; align-items:center; gap:8px; margin-bottom:1.5rem;">
+        <input type="checkbox" id="setting-autocapture" style="accent-color:var(--primary-glow);width:16px;height:16px;">
+        <label for="setting-autocapture" style="font-size:0.8rem;color:var(--text-primary);">Auto-capture pages on load</label>
+      </div>
+
+      <h3 style="font-size:0.85rem;margin-bottom:0.8rem;color:var(--text-primary);border-bottom:1px solid var(--outline-variant);padding-bottom:4px;">📊 Study Statistics</h3>
+      <div style="background:var(--surface-high); border:1px solid var(--outline-variant); border-radius:8px; padding:12px; margin-bottom:1.5rem;">
+        <div style="display:flex; justify-content:space-between; font-size:0.8rem; margin-bottom:6px;">
+          <span style="color:var(--text-dim);">Words Read (Session):</span>
+          <span id="stat-session-words" style="color:var(--text-color);font-weight:bold;">0</span>
+        </div>
+        <div style="display:flex; justify-content:space-between; font-size:0.8rem; margin-bottom:6px;">
+          <span style="color:var(--text-dim);">Time Listened (Session):</span>
+          <span id="stat-session-time" style="color:var(--text-color);font-weight:bold;">0m 0s</span>
+        </div>
+        <div style="height:1px; background:var(--outline-variant); margin:8px 0;"></div>
+        <div style="display:flex; justify-content:space-between; font-size:0.8rem; margin-bottom:6px;">
+          <span style="color:var(--text-dim);">Words Read (All-Time):</span>
+          <span id="stat-alltime-words" style="color:var(--text-color);font-weight:bold;">0</span>
+        </div>
+        <div style="display:flex; justify-content:space-between; font-size:0.8rem;">
+          <span style="color:var(--text-dim);">Time Listened (All-Time):</span>
+          <span id="stat-alltime-time" style="color:var(--text-color);font-weight:bold;">0m 0s</span>
+        </div>
+      </div>
+
       <button id="save-settings-btn" class="glass action-btn" style="margin-top:8px;">💾 Save Configuration</button>
       <div id="settings-status" style="font-size:0.75rem;color:#86efac;text-align:center;min-height:16px;"></div>
     </div>
@@ -158,6 +188,6 @@
   </div>
 
   <script src="../libs/jspdf.umd.min.js"></script>
-  <script src="sidepanel.js"></script>
+  <script type="module" src="sidepanel.js"></script>
 </body>
 </html>

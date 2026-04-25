@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "AI-Study Companion",
-  "version": "1.5.0",
-  "description": "AI-powered study assistant for any page.",
+  "name": "Lexora",
+  "version": "1.6.0",
+  "description": "AI-powered study companion for any page.",
   "permissions": [
     "activeTab",
     "scripting",

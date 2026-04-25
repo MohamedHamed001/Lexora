@@ -280,7 +280,7 @@
     
     const title = document.createElement('div');
     title.className = 'overlay-title';
-    title.textContent = 'Lexora Companion';
+    title.textContent = 'Lexora';
 
     const controls = document.createElement('div');
     controls.className = 'nav-controls';
@@ -419,9 +419,27 @@
   // Page word index: [{word, node, start, end}, ...] in document order
   let pageWords = null;
   let wordCursor = 0;
+  // Cache key — if the URL changes the index is stale
+  let pageWordsCacheUrl = null;
+  // Debounce timer for MutationObserver invalidation
+  let pageWordsInvalidateTimer = null;
 
   // Currently highlighted span elements (for cleanup)
   let activeSpans = [];
+
+  // Watch for significant DOM mutations (e.g. SPA navigations) and invalidate the cache.
+  const _pageWordsMO = new MutationObserver(() => {
+    clearTimeout(pageWordsInvalidateTimer);
+    pageWordsInvalidateTimer = setTimeout(() => {
+      if (location.href !== pageWordsCacheUrl) {
+        pageWords = null;
+        pageWordsCacheUrl = null;
+        wordCursor = 0;
+      }
+    }, 500);
+  });
+  _pageWordsMO.observe(document.body, { childList: true, subtree: true });
+
 
   function injectHighlightStyles() {
     if (highlightStyleInjected) return;
@@ -479,18 +497,25 @@
     const normed = chunkWords.map(norm);
     const pairs = [];
     let pi = startIdx;
+    let misses = 0;
 
     for (let ci = 0; ci < normed.length && pi < pageWords.length; ci++) {
       let found = false;
-      for (let look = 0; look < 15 && pi + look < pageWords.length; look++) {
+      for (let look = 0; look < 35 && pi + look < pageWords.length; look++) {
         if (norm(pageWords[pi + look].word) === normed[ci]) {
           pairs.push({ chunkIdx: ci, pageIdx: pi + look });
           pi = pi + look + 1;
           found = true;
+          misses = 0;
           break;
         }
       }
-      if (!found) pi++; // skip this chunk word, advance page cursor
+      if (!found) {
+        // If a chunk word isn't found (punctuation/quotes/layout), don't immediately
+        // advance the page cursor; that can desync and cause long "no highlight" gaps.
+        misses++;
+        if (misses % 3 === 0) pi++;
+      }
     }
     return pairs;
   }
@@ -579,18 +604,37 @@
     }
   }
 
-  function highlightWord(chunkText, wordIndex) {
+  function highlightWord(chunkText, wordIndex, attempt = 0) {
     injectHighlightStyles();
 
     if (chunkText !== currentChunkText) {
+      const hadSpans = activeSpans.length > 0;
       removeActiveSpans();
       currentChunkText = chunkText;
 
-      pageWords = buildPageWords();
+      // Rebuild page index on URL change OR after we mutate DOM for highlighting.
+      if (!pageWords || hadSpans || location.href !== pageWordsCacheUrl) {
+        pageWords = buildPageWords();
+        pageWordsCacheUrl = location.href;
+        wordCursor = Math.max(0, Math.min(wordCursor, pageWords.length - 1));
+      }
       if (wordCursor >= pageWords.length) wordCursor = 0;
 
       const chunkWords = chunkText.trim().split(/\s+/);
-      const matchStart = findChunkStart(chunkWords);
+      let matchStart = findChunkStart(chunkWords);
+
+      // Recovery: if we drifted (common across paragraphs / inline formatting),
+      // try a wider search window and finally restart from the top.
+      if (matchStart < 0 && pageWords && pageWords.length) {
+        const prevCursor = wordCursor;
+        wordCursor = Math.max(0, prevCursor - 250);
+        matchStart = findChunkStart(chunkWords);
+        if (matchStart < 0) {
+          wordCursor = 0;
+          matchStart = findChunkStart(chunkWords);
+        }
+        if (matchStart < 0) wordCursor = prevCursor;
+      }
 
       if (matchStart >= 0) {
         const pairs = alignChunkToPage(chunkWords, matchStart);
@@ -601,13 +645,37 @@
       }
     }
 
+
     const prev = document.querySelector('.lexora-hl-active');
     if (prev) prev.classList.remove('lexora-hl-active');
 
     const target = document.querySelector(`[data-lw="${wordIndex}"]`);
-    if (target) {
-      target.classList.add('lexora-hl-active');
-      target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    const fallbackTarget = (() => {
+      if (target) return target;
+      // If this exact wordIndex wasn't aligned into a span, highlight the nearest
+      // previous aligned word so highlighting appears continuous.
+      for (let back = 1; back <= 10; back++) {
+        const t = document.querySelector(`[data-lw="${wordIndex - back}"]`);
+        if (t) return t;
+      }
+      return null;
+    })();
+
+    if (fallbackTarget) {
+      fallbackTarget.classList.add('lexora-hl-active');
+      fallbackTarget.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      return;
+    }
+
+    // If we couldn't find ANY span to highlight, re-run alignment once from scratch.
+    // This fixes cases where DOM changes or punctuation drift cause us to lose the mapping mid-paragraph.
+    if (attempt < 1 && chunkText && chunkText.trim()) {
+      removeActiveSpans();
+      currentChunkText = null;
+      pageWords = null;
+      pageWordsCacheUrl = null;
+      wordCursor = 0;
+      highlightWord(chunkText, wordIndex, attempt + 1);
     }
   }
 
@@ -630,6 +698,34 @@
       // Forward to iframe if needed, or handle locally
     } else if (msg.action === 'toggleOverlay') {
       toggleOverlay();
+    } else if (msg.action === 'setHighlightAnchor') {
+      try {
+        const t = (msg.text || '').trim();
+        if (!t) return;
+        // Build/rebuild page index and anchor the cursor near the selection start.
+        pageWords = buildPageWords();
+        pageWordsCacheUrl = location.href;
+        const words = t.split(/\s+/).slice(0, 8);
+        let anchor = -1;
+        if (words.length) {
+          const first = norm(words[0]);
+          const second = words[1] ? norm(words[1]) : null;
+          for (let i = 0; i < pageWords.length; i++) {
+            if (norm(pageWords[i].word) !== first) continue;
+            if (second) {
+              // look ahead a bit for second word
+              let ok = false;
+              for (let j = 1; j <= 6 && i + j < pageWords.length; j++) {
+                if (norm(pageWords[i + j].word) === second) { ok = true; break; }
+              }
+              if (!ok) continue;
+            }
+            anchor = i;
+            break;
+          }
+        }
+        wordCursor = anchor >= 0 ? anchor : 0;
+      } catch (_) {}
     } else if (msg.action === 'highlightWord') {
       highlightWord(msg.chunkText, msg.wordIndex);
     } else if (msg.action === 'clearHighlight') {
@@ -644,5 +740,153 @@
     }
   });
   navObserver.observe(document.documentElement, { childList: true, subtree: true });
+
+  // ── Text Selection Floating Action Bar ────────────────────────────────────
+  let selectionActionBar = null;
+
+  function createSelectionActionBar() {
+    selectionActionBar = document.createElement('div');
+    selectionActionBar.id = 'lexora-selection-action-bar';
+    selectionActionBar.style.cssText = `
+      position: absolute;
+      z-index: 2147483647;
+      background: #1a1a1a;
+      border: 1px solid rgba(255,255,255,0.1);
+      border-radius: 8px;
+      padding: 4px;
+      display: none;
+      gap: 4px;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+      font-family: system-ui, -apple-system, sans-serif;
+    `;
+
+    const btnStyle = `
+      background: rgba(255,255,255,0.1);
+      color: white;
+      border: none;
+      border-radius: 4px;
+      padding: 6px 12px;
+      font-size: 13px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: background 0.2s;
+    `;
+
+    const readBtn = document.createElement('button');
+    readBtn.textContent = '🔊 Read';
+    readBtn.style.cssText = btnStyle;
+    readBtn.onmouseover = () => readBtn.style.background = 'rgba(255,255,255,0.2)';
+    readBtn.onmouseout = () => readBtn.style.background = 'rgba(255,255,255,0.1)';
+    readBtn.onclick = (e) => {
+      e.stopPropagation();
+      e.preventDefault();
+      const text = window.getSelection().toString();
+      browserAPI.runtime.sendMessage({ action: 'captureText', text });
+      selectionActionBar.style.display = 'none';
+      toggleOverlay(true);
+    };
+
+    const askBtn = document.createElement('button');
+    askBtn.textContent = '✨ Ask AI';
+    askBtn.style.cssText = btnStyle;
+    askBtn.onmouseover = () => askBtn.style.background = 'rgba(255,255,255,0.2)';
+    askBtn.onmouseout = () => askBtn.style.background = 'rgba(255,255,255,0.1)';
+    askBtn.onclick = (e) => {
+      e.stopPropagation();
+      e.preventDefault();
+      const text = window.getSelection().toString();
+      browserAPI.runtime.sendMessage({ action: 'askAiAboutText', text });
+      selectionActionBar.style.display = 'none';
+      toggleOverlay(true);
+    };
+
+    selectionActionBar.appendChild(readBtn);
+    selectionActionBar.appendChild(askBtn);
+    document.body.appendChild(selectionActionBar);
+  }
+
+  document.addEventListener('mouseup', (e) => {
+    if (!selectionActionBar) createSelectionActionBar();
+    
+    // Prevent hiding if clicking on the action bar itself
+    if (e.target.closest('#lexora-selection-action-bar')) return;
+
+    setTimeout(() => {
+      const selection = window.getSelection();
+      const text = selection.toString().trim();
+      
+      if (text.length > 0 && !isDragging) {
+        const range = selection.getRangeAt(0);
+        const rect = range.getBoundingClientRect();
+        
+        // Position just above the selection
+        selectionActionBar.style.display = 'flex';
+        
+        // Calculate position considering scroll
+        const top = window.scrollY + rect.top - selectionActionBar.offsetHeight - 8;
+        const left = window.scrollX + rect.left + (rect.width / 2) - (selectionActionBar.offsetWidth / 2);
+        
+        selectionActionBar.style.top = Math.max(window.scrollY + 8, top) + 'px';
+        selectionActionBar.style.left = Math.max(8, left) + 'px';
+      } else {
+        selectionActionBar.style.display = 'none';
+      }
+    }, 10);
+  });
+
+  document.addEventListener('selectionchange', () => {
+    if (selectionActionBar && window.getSelection().toString().trim() === '') {
+      selectionActionBar.style.display = 'none';
+    }
+  });
+
+  // ── Auto Capture Expose ──────────────────────────────────────────────────
+  window.lexoraCaptureText = function() {
+    const p = location.protocol;
+    if (
+      p === 'chrome-extension:' ||
+      p === 'moz-extension:' ||
+      p === 'webkit-extension:' ||
+      p === 'chrome-search:'
+    ) {
+      return null;
+    }
+
+    const selectors = [
+      'article', 'main', '[role="main"]',
+      'section > p', 'section > h1', 'section > h2', 'section > h3', 'section > h4',
+      'h1','h2','h3','h4',
+      'p', 'li',
+      'blockquote',
+      'pre', 'code',
+    ];
+    const allEls = Array.from(document.querySelectorAll(selectors.join(',')));
+    const leafEls = allEls.filter((el) =>
+      !allEls.some((other) => other !== el && el.contains(other))
+    );
+
+    const blocks = [];
+    const seen = new Set();
+    leafEls.forEach((el) => {
+      if (el.closest('nav,button,header,footer,[role="navigation"]')) return;
+      const isVisible = !!el.offsetParent;
+      const txt = (isVisible ? el.innerText : el.textContent)
+        .replace(/\s+/g, ' ')
+        .trim();
+      if (txt.length > 10 && !seen.has(txt)) {
+        seen.add(txt);
+        blocks.push({ tag: el.tagName, text: txt });
+      }
+    });
+    if (!blocks.length) return null;
+    const formatted = blocks.map(b =>
+      /^H\d$/.test(b.tag) ? `\n## ${b.text}\n` : b.text
+    ).join('\n\n');
+    return {
+      title:   document.title.split(' - ')[0] || document.title || 'Captured Page',
+      content: formatted.trim(),
+      url:     location.href,
+    };
+  };
 
 })();

@@ -21,6 +21,44 @@
   --font-body: 'Inter', sans-serif;
 }
 
+body.theme-light {
+  --bg-color: #f7f7f9;
+  --text-color: #1a1a1e;
+  --text-dim: #5c5c66;
+  
+  --primary-glow: #6f63f5;
+  --primary-container: #8b82ff;
+  
+  --secondary-glow: #8e6ee9;
+  --secondary-container: #b091f9;
+  
+  --surface: #ffffff;
+  --surface-low: #fdfdfe;
+  --surface-high: #eaeaee;
+  --surface-highest: #d1d1d6;
+  
+  --outline-variant: rgba(0, 0, 0, 0.1);
+}
+
+/* Light theme contrast fixes for hard-coded white text */
+body.theme-light select,
+body.theme-light option,
+body.theme-light .ai-bubble,
+body.theme-light .user-bubble {
+  color: var(--text-color);
+}
+body.theme-light .ai-bubble {
+  background: rgba(0, 0, 0, 0.04);
+}
+body.theme-light .user-bubble {
+  background: rgba(109, 40, 217, 0.14);
+}
+
+/* Audio transport buttons should remain high-contrast */
+body.theme-light .audio-controls .action-btn {
+  color: #fff;
+}
+
 * {
   box-sizing: border-box;
   margin: 0;
@@ -430,4 +468,8 @@ body {
   background: var(--surface-highest);
   font-weight: 400;
   padding: 4px 8px;
+}
+
+body.theme-light #voice-picker option {
+  color: var(--text-color);
 }

@@ -10,7 +10,6 @@ if (!browserAPI) {
 }
 
 browserAPI.runtime.onMessage.addListener((request, sender, sendResponse) => {
-
   // ── LM Studio proxy ──────────────────────────────────────────────────────
   if (request.action === 'proxyFetch') {
     fetch(request.url, {
@@ -42,6 +41,25 @@ browserAPI.runtime.onMessage.addListener((request, sender, sendResponse) => {
     return false;
   }
 
+  // ── Text Selection Actions ────────────────────────────────────────────────
+  if (request.action === 'captureText' || request.action === 'askAiAboutText') {
+    // If it's just reading, we create a pseudo-lesson
+    if (request.action === 'captureText') {
+      const pseudoLesson = {
+        title: 'Selected Text',
+        content: request.text,
+        url: sender.tab ? sender.tab.url : ''
+      };
+      browserAPI.storage.local.set({ currentLesson: pseudoLesson, autoPlaySelectedText: true });
+
+      browserAPI.tabs.sendMessage(sender.tab.id, { action: 'setHighlightAnchor', text: request.text }).catch(() => {});
+    }
+    
+    // Broadcast to sidepanel so it can update its UI or fill the chat
+    browserAPI.runtime.sendMessage(request).catch(() => {});
+    return false;
+  }
+
   // ── Capture: triggered from the overlay or button ────────────────────────
   if (request.action === 'triggerDeepCapture') {
     browserAPI.tabs.query({ active: true, currentWindow: true }, tabs => {
@@ -66,14 +84,19 @@ browserAPI.runtime.onMessage.addListener((request, sender, sendResponse) => {
               return null;
             }
 
+            // Semantic selectors cover the broadest range of modern sites.
+            // Ordered from most to least specific so the leaf-filter below
+            // removes duplicate content from parent/child matches.
             const selectors = [
-              'h1','h2','h3','h4','p','li',
-              '.index--body--299_C',
-              '.atom-content',
-              '.concept-content',
-              "div[class*='index-module--content']",
-              "div[class*='text-lesson']",
-              "div[class*='video-lesson']",
+              // Block-level content elements
+              'article', 'main', '[role="main"]',
+              // Semantic sectioning
+              'section > p', 'section > h1', 'section > h2', 'section > h3', 'section > h4',
+              // Standard body content
+              'h1','h2','h3','h4',
+              'p', 'li',
+              'blockquote',
+              'pre', 'code',
             ];
             const allEls = Array.from(document.querySelectorAll(selectors.join(',')));
             // Keep only "leaf" matches: drop a node if another matched node sits inside it.
@@ -81,6 +104,7 @@ browserAPI.runtime.onMessage.addListener((request, sender, sendResponse) => {
             const leafEls = allEls.filter((el) =>
               !allEls.some((other) => other !== el && el.contains(other))
             );
+
             const blocks = [];
             const seen = new Set();
             leafEls.forEach((el) => {
@@ -170,4 +194,43 @@ browserAPI.action.onClicked.addListener((tab) => {
       browserAPI.tabs.sendMessage(tab.id, { action: 'toggleOverlay' });
     });
   });
+});
+
+// ── Auto-Capture: Trigger capture when navigation completes ───────────────────
+if (browserAPI.webNavigation && browserAPI.webNavigation.onCompleted) {
+  browserAPI.webNavigation.onCompleted.addListener((details) => {
+    if (details.frameId === 0) {
+      browserAPI.storage.local.get(['lexoraConfig'], (res) => {
+        if (res.lexoraConfig && res.lexoraConfig.autoCapture) {
+          // Trigger capture for this tab
+          // Wait a moment for dynamic content to load before capturing
+          setTimeout(() => {
+            browserAPI.scripting.executeScript({
+              target: { tabId: details.tabId },
+              func: () => {
+                if (window.lexoraCaptureText) {
+                  const data = window.lexoraCaptureText();
+                  if (data && data.content && data.content.length > 80) {
+                    chrome.runtime.sendMessage({ action: 'autoCaptureSave', data });
+                  }
+                }
+              }
+            }).catch(() => {});
+          }, 2000);
+        }
+      });
+    }
+  });
+}
+
+// Handle autoCaptureSave
+browserAPI.runtime.onMessage.addListener((request, sender, sendResponse) => {
+  if (request.action === 'autoCaptureSave' && request.data) {
+    try {
+      const polished = cleanCapturedLessonNonAi(request.data);
+      browserAPI.storage.local.set({ currentLesson: polished });
+    } catch (e) {
+      browserAPI.storage.local.set({ currentLesson: request.data });
+    }
+  }
 });
