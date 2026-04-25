@@ -18,6 +18,7 @@
 ## Table of Contents
 
 - [Overview](#overview)
+- [What's New](#whats-new)
 - [Features](#features)
 - [Tech Stack](#tech-stack)
 - [Project Structure](#project-structure)
@@ -46,13 +47,26 @@ The extension was born from a simple personal need: I lose focus when I only rea
 
 ---
 
+## What's New
+
+### v1.6.0
+
+- **Stability**: Fixed capture flow issues that could leave the UI stuck on “Scanning…”.
+- **Selected text → Read**: “Read” from the page selection bar now captures the selection into a “Selected Text” lesson and **auto-starts audio**.
+- **Highlight accuracy**: More robust word alignment + recovery, plus an anchor so highlighting starts near the selected text.
+- **Theme persistence + light mode contrast**: Settings persist correctly and light mode has improved readability for dropdowns and chat bubbles.
+- **Refactor**: Sidepanel logic split into `sidepanel/js/*` modules (UI, settings, export, chat, utils) for maintainability.
+
+---
+
 ## Features
 
 | Category | Feature |
 |---|---|
 | 📸 **Smart Capture** | Deep extraction from main frame + all iframes; captures hidden/collapsed content; deterministic cleanup removes boilerplate (cookie banners, nav, footers) |
-| 🗣️ **Neural TTS** | Two local engines: **Kokoro** (natural, human-like, ~92 MB model) and **Piper** (fast, lightweight ONNX, 2 voices). Both download models on first use and cache locally |
-| 🎯 **Word Highlighting** | Character-weighted word-level highlighting synced to audio playback; works across iframes; smooth scrolling follows the spoken word |
+| 🗣️ **Neural TTS** | Two local engines: **Kokoro** (natural, human-like) and **Piper** (offline, lightweight). Models download on first use and cache locally |
+| 🎯 **Word Highlighting** | Word-level highlighting synced to audio playback; works across iframes; improved alignment + recovery on “messy” pages |
+| 🖱️ **Read Selected Text** | Select any text on the page and use the floating action bar to **Read** it instantly (auto-opens panel + auto-plays) |
 | 💬 **AI Chat** | Context-aware Q&A powered by any OpenAI-compatible endpoint (LM Studio, Ollama, OpenAI API, etc.) |
 | 📄 **PDF Export** | One-click export of captured content to a formatted PDF via jsPDF |
 | 🎛️ **Audio Controls** | Play / Pause / Resume, Previous / Next sentence, seek slider, adjustable speed (0.5x to 1.5x), 28+ voice options |
@@ -92,7 +106,14 @@ Lexora/
 │   └── sidepanel/                # Main UI + TTS engines
 │       ├── sidepanel.html        # Panel UI (Chat, Content, Audio, Export, Settings tabs)
 │       ├── sidepanel.css         # "Luminous Void" dark theme with glassmorphism
-│       ├── sidepanel.js          # App logic: capture, chat, audio engine, PDF export, settings
+│       ├── sidepanel.js          # Orchestrator: audio engine + wires up sidepanel/js modules
+│       ├── js/                   # Sidepanel modules (UI, settings, chat, export, utils)
+│       │   ├── ui.js
+│       │   ├── settings.js
+│       │   ├── chat.js
+│       │   ├── export.js
+│       │   ├── utils.js
+│       │   └── ...
 │       ├── kokoro-worker.js      # Web Worker for Kokoro neural TTS (ES module, job queue + epoch cancel)
 │       ├── kokoro.web.js         # Kokoro TTS + Transformers.js runtime bundle
 │       ├── piper-worker.js       # Web Worker for Piper TTS (ONNX Runtime + on-demand model download)
@@ -109,7 +130,8 @@ Lexora/
 |---|---|
 | `background.js` | Service worker handling three message types: `proxyFetch` (LLM API relay), `highlightWord` / `clearHighlight` (broadcast to all frames), `triggerDeepCapture` (page extraction) |
 | `content.js` | Injects the draggable overlay host (Shadow DOM), builds a `pageWords` index via `TreeWalker`, performs greedy chunk-to-page word alignment, wraps matched words in `<span>` for highlighting |
-| `sidepanel.js` | ~1100 lines covering tab management, capture workflow, markdown rendering, AI chat, dual TTS engine management (Kokoro + Piper), audio caching/prefetch pipeline, seek/highlight sync, PDF export, settings persistence |
+| `sidepanel.js` | Audio engine + TTS orchestration (Kokoro + Piper), caching/prefetch pipeline, seek/highlight sync, and integration glue for the modular UI |
+| `sidepanel/js/*.js` | Sidepanel modules: tab UI + lesson rendering (`ui.js`), settings persistence (`settings.js`), chat (`chat.js`), export (`export.js`), DOM/state helpers |
 | `kokoro-worker.js` | ES module Web Worker with internal job queue + epoch-based cancellation. Downloads Kokoro-82M ONNX model (~92 MB quantized) from Hugging Face Hub on first use |
 | `piper-worker.js` | Classic Web Worker running ONNX Runtime. Downloads Piper voice models (`amy-low`, `hfc_female-medium`) from HuggingFace on first use, caches in IndexedDB. Handles phonemization via `piper_phonemize` WASM, then ONNX inference |
 | `capture-clean.js` | Deterministic (non-AI) post-capture cleanup: Unicode normalization, whitespace compaction, consecutive duplicate removal, boilerplate pattern filtering |
