@@ -19,7 +19,12 @@ function cleanCapturedMarkdownNonAi(text) {
   let prevParaNorm = null;
 
   for (let raw of paragraphs) {
-    const lines = raw.split('\n').map((l) => l.replace(/\s+/g, ' ').trim()).filter(Boolean);
+    const lines = raw
+      .split('\n')
+      .map((l) => l.replace(/\s+/g, ' ').trim())
+      .filter(Boolean)
+      // Drop boilerplate lines even when mixed with real content.
+      .filter((l) => !isBoilerplateLine(l));
     if (!lines.length) continue;
 
     const block = lines.join('\n');
@@ -55,11 +60,30 @@ function cleanCapturedLessonNonAi(lesson) {
   return { ...lesson, content: cleanCapturedMarkdownNonAi(lesson.content) };
 }
 
+function isBoilerplateLine(line) {
+  const t = (line || '').trim();
+  if (!t) return true;
+
+  // URLs / hostnames often show up as breadcrumbs or viewer chrome.
+  if (/^(https?:\/\/)?([a-z0-9-]+\.)+[a-z]{2,}(\/\S*)?$/i.test(t)) return true;
+
+  // Copyright footers (common vendor variants)
+  if (/^©\s*\d{4}.*all rights reserved\.?$/i.test(t)) return true;
+  if (/^copyright\s+©?\s*\d{4}.*$/i.test(t)) return true;
+  if (/amazon web services,? inc\.?/i.test(t) && /all rights reserved/i.test(t)) return true;
+
+  // Known "chrome" crumbs frequently captured in LMS/PDF viewers
+  if (/^aws\.amazon\.com\/training\/awsacademy\/?$/i.test(t)) return true;
+
+  return false;
+}
+
 function isBoilerplateBlock(norm) {
-  if (norm.length > 140) return false;
   const t = norm.replace(/[.!?…]+$/g, '').trim();
 
   const patterns = [
+    // Only treat as a full-block boilerplate when the whole block is short-ish
+    // (line-level filtering handles mixed blocks).
     /^skip to main( content)?$/i,
     /^(cookie|cookies)(\s+policy|\s+settings|\s+preferences)?$/i,
     /^accept(\s+all)?(\s+cookies)?$/i,
@@ -72,8 +96,8 @@ function isBoilerplateBlock(norm) {
     /^sign\s+in$/i,
     /^log\s+in$/i,
     /^create(\s+an?)?\s+account$/i,
-    /^copyright\s+©?\s*\d{4}/i,
     /^all\s+rights\s+reserved\.?$/i,
   ];
+  if (t.length > 140) return false;
   return patterns.some((re) => re.test(t));
 }

@@ -4,6 +4,7 @@ export const dom = {
   // Capture
   captureBtn: document.getElementById('capture-btn'),
   captureStatus: document.getElementById('capture-status'),
+  captureReady: document.getElementById('capture-ready'),
   
   // Headers
   urlEl: document.getElementById('lesson-url'),

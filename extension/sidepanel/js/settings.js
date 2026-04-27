@@ -5,7 +5,7 @@ import { applyLesson } from './ui.js';
 export function initSettings() {
   if (!state.browserAPI) return;
 
-  state.browserAPI.storage.local.get(['currentLesson', 'lexoraConfig', 'autoPlaySelectedText'], res => {
+  state.browserAPI.storage.local.get(['currentLesson', 'lexoraConfig', 'lexoraStats', 'autoPlaySelectedText'], res => {
     if (res.currentLesson) {
       state.currentLesson = res.currentLesson;
       applyLesson(state.currentLesson);
@@ -34,7 +34,7 @@ export function initSettings() {
     }
     
     // Load stats
-    if (res.lexoraStats) {
+    if (res.lexoraStats?.allTime) {
       state.stats.allTime = { ...state.stats.allTime, ...res.lexoraStats.allTime };
     }
     updateStatsUI();
@@ -62,6 +62,10 @@ export function initSettings() {
   // Listen for the one-shot flag + lesson update and auto-start playback.
   state.browserAPI.storage.onChanged.addListener((changes, areaName) => {
     if (areaName !== 'local') return;
+    if (changes.lexoraStats?.newValue?.allTime) {
+      state.stats.allTime = { ...state.stats.allTime, ...changes.lexoraStats.newValue.allTime };
+      updateStatsUI();
+    }
     const nextFlag = changes.autoPlaySelectedText?.newValue;
     const nextLesson = changes.currentLesson?.newValue;
     if (!nextFlag) return;
@@ -135,15 +139,20 @@ export function updateStatsUI() {
 }
 
 export function addStats(words, timeMs) {
-  state.stats.session.wordsRead += words;
-  state.stats.session.timeListened += timeMs;
-  state.stats.allTime.wordsRead += words;
-  state.stats.allTime.timeListened += timeMs;
+  const w = Number.isFinite(words) ? Math.max(0, Math.floor(words)) : 0;
+  const t = Number.isFinite(timeMs) ? Math.max(0, Math.floor(timeMs)) : 0;
+
+  state.stats.session.wordsRead += w;
+  state.stats.session.timeListened += t;
+  state.stats.allTime.wordsRead += w;
+  state.stats.allTime.timeListened += t;
   
   // Save allTime stats
-  state.browserAPI.storage.local.set({ 
-    lexoraStats: { allTime: state.stats.allTime } 
-  });
+  try {
+    state.browserAPI?.storage?.local?.set?.({
+      lexoraStats: { allTime: state.stats.allTime }
+    });
+  } catch (_) {}
   updateStatsUI();
 }
 

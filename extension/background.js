@@ -84,6 +84,13 @@ browserAPI.runtime.onMessage.addListener((request, sender, sendResponse) => {
               return null;
             }
 
+            const normalizeLine = (s) =>
+              (s || '')
+                .replace(/\u00a0/g, ' ')
+                .replace(/[\u200B-\u200D\uFEFF]/g, '')
+                .replace(/\s+/g, ' ')
+                .trim();
+
             // Semantic selectors cover the broadest range of modern sites.
             // Ordered from most to least specific so the leaf-filter below
             // removes duplicate content from parent/child matches.
@@ -110,21 +117,68 @@ browserAPI.runtime.onMessage.addListener((request, sender, sendResponse) => {
             leafEls.forEach((el) => {
               if (el.closest('nav,button,header,footer,[role="navigation"]')) return;
               const isVisible = !!el.offsetParent;
-              const txt = (isVisible ? el.innerText : el.textContent)
-                .replace(/\s+/g, ' ')
-                .trim();
+              const txt = normalizeLine(isVisible ? el.innerText : el.textContent);
               if (txt.length > 10 && !seen.has(txt)) {
                 seen.add(txt);
                 blocks.push({ tag: el.tagName, text: txt });
               }
             });
-            if (!blocks.length) return null;
-            const formatted = blocks.map(b =>
+
+            const htmlFormatted = blocks.map(b =>
               /^H\d$/.test(b.tag) ? `\n## ${b.text}\n` : b.text
             ).join('\n\n');
+
+            // PDF-in-page (PDF.js) support: extract from the text layer when present.
+            const pdfEmbeds = [
+              ...document.querySelectorAll(
+                'embed[type="application/pdf"], object[type="application/pdf"], iframe[src*=".pdf"], iframe[src*="viewer"], iframe[src*="pdf"]'
+              ),
+            ];
+
+            const pdfTextNodes = [
+              ...document.querySelectorAll(
+                '.textLayer span, [class*="textLayer"] span, .textLayer div, [class*="textLayer"] div'
+              ),
+            ];
+
+            const pdfLines = [];
+            if (pdfTextNodes.length) {
+              for (const node of pdfTextNodes) {
+                const t = normalizeLine(node.textContent);
+                if (!t) continue;
+                if (t.length > 2 && !seen.has(t)) {
+                  seen.add(t);
+                  pdfLines.push(t);
+                }
+              }
+            }
+
+            const pdfText = pdfLines.join('\n').replace(/\n{3,}/g, '\n\n').trim();
+
+            const content =
+              pdfText.length >= 400 && pdfText.length > htmlFormatted.trim().length * 0.8
+                ? pdfText
+                : htmlFormatted.trim();
+
+            const pdfUrl =
+              pdfEmbeds.find((e) => e && (e.src || e.data))?.src ||
+              pdfEmbeds.find((e) => e && (e.src || e.data))?.data ||
+              '';
+
+            if (!content || content.length < 80) {
+              if (pdfUrl) {
+                return {
+                  title: document.title.split(' - ')[0] || document.title || 'Captured Page',
+                  content: `## PDF detected\n\nThis page appears to embed a PDF, but no selectable text layer was found to extract from.\n\nPDF URL: ${pdfUrl}`.trim(),
+                  url: location.href,
+                };
+              }
+              return null;
+            }
+
             return {
               title:   document.title.split(' - ')[0] || document.title || 'Captured Page',
-              content: formatted.trim(),
+              content,
               url:     location.href,
             };
           },
@@ -182,18 +236,157 @@ browserAPI.runtime.onMessage.addListener((request, sender, sendResponse) => {
     });
     return true; // async
   }
+
+  // ── Probe: is current page capturable? (for UI indicator) ────────────────
+  if (request.action === 'probeCapturable') {
+    browserAPI.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+      const tab = tabs[0];
+      if (!tab) {
+        sendResponse({ success: true, capturable: false, status: 'no_tab', reason: 'No active tab.' });
+        return;
+      }
+
+      const url = tab.url || '';
+      // Restricted pages cannot run content scripts / executeScript.
+      if (/^(about:|chrome:|chrome-extension:|moz-extension:|edge:|vivaldi:)/i.test(url)) {
+        sendResponse({
+          success: true,
+          capturable: false,
+          status: 'restricted',
+          reason: 'This page type blocks extraction. Open a normal webpage or PDF viewer tab.',
+        });
+        return;
+      }
+
+      browserAPI.scripting.executeScript(
+        {
+          target: { tabId: tab.id, allFrames: true },
+          func: () => {
+            const p = location.protocol;
+            if (
+              p === 'chrome-extension:' ||
+              p === 'moz-extension:' ||
+              p === 'webkit-extension:' ||
+              p === 'chrome-search:'
+            ) {
+              return { capturable: false, status: 'restricted', reason: 'Extension pages are not capturable.' };
+            }
+
+            const normalizeLine = (s) =>
+              (s || '')
+                .replace(/\u00a0/g, ' ')
+                .replace(/[\u200B-\u200D\uFEFF]/g, '')
+                .replace(/\s+/g, ' ')
+                .trim();
+
+            // PDF.js text layer
+            const pdfTextNodes = [
+              ...document.querySelectorAll(
+                '.textLayer span, [class*="textLayer"] span, .textLayer div, [class*="textLayer"] div'
+              ),
+            ];
+            let pdfChars = 0;
+            for (const n of pdfTextNodes) pdfChars += normalizeLine(n.textContent).length;
+
+            // Basic HTML text signal
+            const els = Array.from(document.querySelectorAll('h1,h2,h3,h4,p,li,blockquote'));
+            let htmlChars = 0;
+            for (const el of els.slice(0, 250)) {
+              const t = normalizeLine(!!el.offsetParent ? el.innerText : el.textContent);
+              if (t.length > 10) htmlChars += t.length;
+              if (htmlChars > 2500) break;
+            }
+
+            const capturable = pdfChars >= 600 || htmlChars >= 800;
+            const kind = pdfChars >= 600 ? 'pdf' : (htmlChars >= 800 ? 'html' : 'unknown');
+            return {
+              capturable,
+              status: capturable ? 'ready' : 'not_ready',
+              kind,
+              pdfChars,
+              htmlChars,
+              reason: capturable ? 'Ready to capture.' : 'No strong text signal found yet (page may still be loading).',
+            };
+          },
+        },
+        (results) => {
+          try {
+            if (browserAPI.runtime.lastError) {
+              sendResponse({
+                success: true,
+                capturable: false,
+                status: 'restricted',
+                reason: browserAPI.runtime.lastError.message || 'This page blocks extraction.',
+              });
+              return;
+            }
+            const best = (results || [])
+              .map((r) => r.result)
+              .find((r) => r && typeof r.capturable === 'boolean');
+
+            if (best) {
+              sendResponse({ success: true, ...best });
+            } else {
+              sendResponse({ success: true, capturable: false, status: 'not_ready', reason: 'No readable content detected.' });
+            }
+          } catch (e) {
+            sendResponse({ success: true, capturable: false, status: 'not_ready', reason: e?.message || 'Probe failed.' });
+          }
+        }
+      );
+    });
+    return true; // async
+  }
 });
 
 // ── Action Click: Toggle Overlay ────────────────────────────────────────────
+async function openSidebarFallback(tab) {
+  try {
+    // Firefox: sidebar_action
+    if (browserAPI.sidebarAction && typeof browserAPI.sidebarAction.open === 'function') {
+      await browserAPI.sidebarAction.open();
+      return true;
+    }
+  } catch (_) {}
+  try {
+    // Chromium: sidePanel (if available)
+    if (browserAPI.sidePanel && typeof browserAPI.sidePanel.open === 'function') {
+      const win = await browserAPI.windows.getCurrent();
+      await browserAPI.sidePanel.open({ windowId: win.id });
+      return true;
+    }
+  } catch (_) {}
+
+  return false;
+}
+
 browserAPI.action.onClicked.addListener((tab) => {
-  browserAPI.tabs.sendMessage(tab.id, { action: 'toggleOverlay' }).catch(() => {
-    browserAPI.scripting.executeScript({
-      target: { tabId: tab.id, allFrames: true },
-      files: ['content.js']
-    }).then(() => {
-      browserAPI.tabs.sendMessage(tab.id, { action: 'toggleOverlay' });
+  // Prefer overlay (best UX on normal webpages). If the page blocks injection (new tab/about:),
+  // fall back to opening the browser sidebar when available (Firefox).
+  const sendToTab = (tabId, msg) =>
+    new Promise((resolve, reject) => {
+      try {
+        browserAPI.tabs.sendMessage(tabId, msg, (resp) => {
+          const err = browserAPI.runtime.lastError;
+          if (err) reject(err);
+          else resolve(resp);
+        });
+      } catch (e) {
+        reject(e);
+      }
     });
-  });
+
+  sendToTab(tab.id, { action: 'toggleOverlay' })
+    .catch(async () => {
+      // If messaging failed, inject the content script then try again.
+      await browserAPI.scripting.executeScript({
+        target: { tabId: tab.id, allFrames: true },
+        files: ['content.js'],
+      });
+      await sendToTab(tab.id, { action: 'toggleOverlay' });
+    })
+    .catch(() => openSidebarFallback(tab))
+    .catch(() => {});
 });
 
 // ── Auto-Capture: Trigger capture when navigation completes ───────────────────

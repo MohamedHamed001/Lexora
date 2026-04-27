@@ -18,9 +18,15 @@
         <div class="app-name">✦ Lexora</div>
         <div id="lesson-url">Click capture to start</div>
       </div>
-      <button id="capture-btn" class="capture-btn">
-        ✨ Capture
-      </button>
+      <div style="display:flex; align-items:center; gap:10px;">
+        <div id="capture-ready" class="capture-ready capture-ready--unknown" title="Checking page…">
+          <span class="capture-ready-dot"></span>
+          <span class="capture-ready-text">Checking</span>
+        </div>
+        <button id="capture-btn" class="capture-btn">
+          ✨ Capture
+        </button>
+      </div>
     </div>
     <div id="capture-status" class="capture-status"></div>
   </div>

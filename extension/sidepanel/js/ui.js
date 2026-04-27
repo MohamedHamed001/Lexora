@@ -1,6 +1,39 @@
 import { state } from './state.js';
 import { dom } from './dom.js';
 import { mdToHtml, escHtml } from './utils.js';
+
+function showNoSupportedContent(message) {
+  const msg = (message || 'No content found on this page.').trim();
+
+  if (dom.lessonHeader) dom.lessonHeader.style.display = 'none';
+  if (dom.titleEl) dom.titleEl.textContent = '';
+
+  if (dom.lessonText) {
+    dom.lessonText.innerHTML = `
+      <div class="no-content-card">
+        <div class="no-content-title">No supported content detected</div>
+        <div class="no-content-body">
+          ${escHtml(msg)}
+          <br><br>
+          If you’re sure the page contains readable content, wait a moment (large files can take time), then refresh once and try capturing again.
+        </div>
+      </div>
+    `.trim();
+  }
+
+  if (dom.exportInfo) {
+    dom.exportInfo.textContent = 'No lesson captured yet.';
+  }
+
+  if (dom.chatMessages) {
+    dom.chatMessages.innerHTML = `<div class="ai-bubble">⚠️ ${escHtml(msg)}<br><br>Try capturing again after the page finishes loading.</div>`;
+    state.chatHistory = [];
+  }
+
+  const contentTab = document.querySelector('.tab[data-tab="content"]');
+  if (contentTab) contentTab.click();
+}
+
 export function initUI() {
   // ── Tab switching ──────────────────────────────────────────────────────────
   document.querySelectorAll('.tab').forEach(tab => {
@@ -37,10 +70,63 @@ export function initUI() {
           if (dom.captureStatus) {
             dom.captureStatus.textContent = '⚠️ ' + (resp?.error || 'No content found on this page.');
           }
+          showNoSupportedContent(resp?.error || 'No content found on this page.');
         }
       });
     });
   }
+
+  // ── Capture readiness indicator ───────────────────────────────────────────
+  const setReady = ({ status, reason }) => {
+    if (!dom.captureReady) return;
+    dom.captureReady.classList.remove(
+      'capture-ready--unknown',
+      'capture-ready--ready',
+      'capture-ready--not_ready',
+      'capture-ready--restricted'
+    );
+
+    const s = status || 'unknown';
+    const mapClass =
+      s === 'ready' ? 'capture-ready--ready'
+      : s === 'restricted' ? 'capture-ready--restricted'
+      : s === 'not_ready' ? 'capture-ready--not_ready'
+      : 'capture-ready--unknown';
+
+    dom.captureReady.classList.add(mapClass);
+    const textEl = dom.captureReady.querySelector('.capture-ready-text');
+    if (textEl) {
+      textEl.textContent =
+        s === 'ready' ? 'Ready'
+        : s === 'restricted' ? 'Blocked'
+        : s === 'not_ready' ? 'Not ready'
+        : 'Checking';
+    }
+    dom.captureReady.title = reason || 'Checking page…';
+  };
+
+  async function probeCapturableOnce() {
+    setReady({ status: 'unknown', reason: 'Checking page…' });
+    try {
+      // Support both callback-style (chrome) and promise-style (browser) APIs.
+      const maybePromise = state.browserAPI.runtime.sendMessage({ action: 'probeCapturable' }, (resp) => {
+        if (resp?.success) setReady({ status: resp.status, reason: resp.reason });
+        else setReady({ status: 'unknown', reason: resp?.error || 'Checking page…' });
+      });
+
+      if (maybePromise && typeof maybePromise.then === 'function') {
+        const resp = await maybePromise;
+        if (resp?.success) setReady({ status: resp.status, reason: resp.reason });
+        else setReady({ status: 'unknown', reason: resp?.error || 'Checking page…' });
+      }
+    } catch (e) {
+      setReady({ status: 'restricted', reason: e?.message || 'This page blocks extraction.' });
+    }
+  }
+
+  // Kick off immediately, then refresh periodically (captures SPA/PDF viewer readiness).
+  probeCapturableOnce();
+  setInterval(probeCapturableOnce, 1800);
 
   // Refresh UI if storage updates (e.g. overlay/sidepanel sync).
   state.browserAPI.storage.onChanged.addListener((changes, areaName) => {

@@ -23,6 +23,20 @@
   let isDragging = false;
   let dragOffset = { x: 0, y: 0 };
 
+  function destroyOverlay() {
+    try {
+      if (overlayIframe) overlayIframe.src = 'about:blank';
+    } catch (_) {}
+    try {
+      if (overlayHost && overlayHost.parentNode) overlayHost.parentNode.removeChild(overlayHost);
+    } catch (_) {}
+    overlayHost = null;
+    overlayShadow = null;
+    overlayIframe = null;
+    isMinimized = false;
+    isDragging = false;
+  }
+
   function createOverlay() {
     if (overlayHost) return;
     if (window !== window.top) return;
@@ -297,13 +311,7 @@
     closeBtn.title = 'Close & Stop';
     closeBtn.onclick = (e) => { 
       e.stopPropagation();
-      if (overlayIframe && overlayIframe.contentWindow) {
-        overlayIframe.src = 'about:blank';
-      }
-      toggleOverlay(false); 
-      setTimeout(() => {
-        if (overlayIframe) overlayIframe.src = browserAPI.runtime.getURL('sidepanel/sidepanel.html');
-      }, 500);
+      destroyOverlay();
     };
 
     controls.appendChild(minBtn);
@@ -388,6 +396,10 @@
 
   function toggleOverlay(force) {
     if (window !== window.top) return;
+    if (overlayHost && !overlayHost.isConnected) {
+      // If the DOM node was removed unexpectedly, reset and recreate.
+      destroyOverlay();
+    }
     if (!overlayHost) createOverlay();
     
     const isVisible = overlayHost.style.opacity === '1';

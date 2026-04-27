@@ -973,6 +973,7 @@ function playFromBlob(blob, sampleRate, voiceId) {
   currentChunkText = text.trim();
   currentChunkWords = currentChunkText.split(/\s+/).filter(Boolean);
   lastHighlightedWord = -1;
+  const chunkWordCount = currentChunkWords.length || 1;
 
   currentAudioElement.addEventListener(
     'durationchange',
@@ -984,13 +985,18 @@ function playFromBlob(blob, sampleRate, voiceId) {
   );
 
   currentAudioElement.onended = () => {
+    // Capture metrics BEFORE we clear refs.
+    const durSec = currentAudioElement?._lexoraDur || currentAudioElement?.duration || 0;
+    const durMs = isFinite(durSec) && durSec > 0 ? durSec * 1000 : 0;
+
     URL.revokeObjectURL(url);
-    currentAudioElement = null;
     sendClearHighlight();
     if (speaking) {
-      advanceSentence();
+      advanceSentence(chunkWordCount, durMs);
+      currentAudioElement = null;
       speakNext();
     } else {
+      currentAudioElement = null;
       stopSeekerTimer();
     }
   };
@@ -1361,15 +1367,22 @@ function saveReadingProgress() {
   }, 1000);
 }
 
-function advanceSentence() {
-  let wordsRead = currentChunkWords ? currentChunkWords.length : 1;
+function advanceSentence(wordsOverride, timeMsOverride) {
+  const wordsRead =
+    Number.isFinite(wordsOverride) && wordsOverride > 0
+      ? Math.floor(wordsOverride)
+      : (currentChunkWords?.length || 1);
+
   let timeMs = 0;
-  if (currentAudioElement) {
+  if (Number.isFinite(timeMsOverride) && timeMsOverride > 0) {
+    timeMs = timeMsOverride;
+  } else if (currentAudioElement) {
     timeMs = (currentAudioElement._lexoraDur || currentAudioElement.duration || 0) * 1000;
   } else if (sysUtteranceDurationEst) {
     timeMs = sysUtteranceDurationEst * 1000;
   }
   if (!isFinite(timeMs) || isNaN(timeMs)) timeMs = 0;
+
   addStats(wordsRead, timeMs);
   sentenceIdx++;
   saveReadingProgress();
