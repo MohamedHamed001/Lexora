@@ -25,7 +25,7 @@ export function initExport() {
         doc.setTextColor(0);
       };
 
-      const checkPage = (lineH = 7) => {
+      const checkPage = () => {
         if (y > PH - ML - 14) {
           addPageNumber();
           doc.addPage();

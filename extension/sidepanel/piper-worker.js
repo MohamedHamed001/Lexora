@@ -11,16 +11,35 @@ const PIPER_REMOTE_MODELS = {
   amy: {
     onnxUrl:   'https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/en/en_US/amy/low/en_US-amy-low.onnx',
     configUrl: 'https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/en/en_US/amy/low/en_US-amy-low.onnx.json',
+    // sha256 pinned (computed from HuggingFace v1.0.0 artifacts)
+    onnxSha256: 'a5a91abb7de0f104358a25aded480ddacf1ff0762886325886ec406a2e86aab3',
+    configSha256: '2250a9a605b8dc35a116717fadc5056695dd809e34a15d02f72a0f52d53d3ebb',
     label: 'Amy (low)',
     sampleRate: 16000,
   },
   hfc_female: {
     onnxUrl:   'https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/en/en_US/hfc_female/medium/en_US-hfc_female-medium.onnx',
     configUrl: 'https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/en/en_US/hfc_female/medium/en_US-hfc_female-medium.onnx.json',
+    // sha256 pinned (computed from HuggingFace v1.0.0 artifacts)
+    onnxSha256: '914c473788fc1fa8b63ace1cdcdb44588f4ae523d3ab37df1536616835a140b7',
+    configSha256: '03f1fa0622b80463283592d97aca9f6e89aec345a5c56b7257723e0093c58b6c',
     label: 'Google Female EN (medium)',
     sampleRate: 22050,
   },
 };
+
+async function sha256Hex(buf) {
+  if (!buf) throw new Error('sha256: missing input');
+  if (!crypto?.subtle?.digest) throw new Error('crypto.subtle.digest unavailable');
+  const ab = buf instanceof ArrayBuffer ? buf : buf.buffer;
+  const hash = await crypto.subtle.digest('SHA-256', ab);
+  return [...new Uint8Array(hash)].map((b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+async function sha256HexOfText(text) {
+  const enc = new TextEncoder();
+  return sha256Hex(enc.encode(text).buffer);
+}
 
 // ── IndexedDB helpers ───────────────────────────────────────────────────────
 const IDB_NAME    = 'lexora-piper-models';
@@ -108,6 +127,8 @@ async function getModelAssets(modelKey) {
 
   const onnxCacheKey  = `onnx:${modelKey}`;
   const configCacheKey = `config:${modelKey}`;
+  const onnxHashKey = `sha:onnx:${modelKey}`;
+  const configHashKey = `sha:config:${modelKey}`;
 
   let db;
   try { db = await openDB(); } catch (e) {
@@ -122,13 +143,20 @@ async function getModelAssets(modelKey) {
         idbGet(db, onnxCacheKey),
         idbGet(db, configCacheKey),
       ]);
-      if (cachedModel && cachedConfig) {
-        log(`Cache hit for ${modelKey} — loading from IndexedDB`);
-        self.postMessage({
-          type: 'progress',
-          progress: { status: 'ready', file: meta.label },
-        });
-        return { modelBuffer: cachedModel, configJson: cachedConfig };
+      const [cachedModelSha, cachedConfigSha] = await Promise.all([
+        idbGet(db, onnxHashKey),
+        idbGet(db, configHashKey),
+      ]);
+      if (cachedModel && cachedConfig && cachedModelSha && cachedConfigSha) {
+        if (cachedModelSha === meta.onnxSha256 && cachedConfigSha === meta.configSha256) {
+          log(`Cache hit for ${modelKey} — loading from IndexedDB (hash verified)`);
+          self.postMessage({
+            type: 'progress',
+            progress: { status: 'ready', file: meta.label },
+          });
+          return { modelBuffer: cachedModel, configJson: cachedConfig };
+        }
+        log(`Cache hash mismatch for ${modelKey} — redownloading`);
       }
     } catch (e) {
       log(`IndexedDB read failed: ${e.message}`);
@@ -143,6 +171,10 @@ async function getModelAssets(modelKey) {
   });
 
   const modelBuffer = await fetchWithProgress(meta.onnxUrl, `${meta.label} model`);
+  const modelSha = await sha256Hex(modelBuffer);
+  if (meta.onnxSha256 && modelSha !== meta.onnxSha256) {
+    throw new Error(`Integrity check failed for ${meta.label} model (sha256 mismatch)`);
+  }
 
   self.postMessage({
     type: 'progress',
@@ -151,6 +183,10 @@ async function getModelAssets(modelKey) {
   const configResp = await fetch(meta.configUrl);
   if (!configResp.ok) throw new Error(`Failed to download config for ${meta.label}`);
   const configJson = await configResp.text();
+  const configSha = await sha256HexOfText(configJson);
+  if (meta.configSha256 && configSha !== meta.configSha256) {
+    throw new Error(`Integrity check failed for ${meta.label} config (sha256 mismatch)`);
+  }
 
   // 3. Cache in IndexedDB for next time
   if (db) {
@@ -158,6 +194,8 @@ async function getModelAssets(modelKey) {
       await Promise.all([
         idbPut(db, onnxCacheKey, modelBuffer),
         idbPut(db, configCacheKey, configJson),
+        idbPut(db, onnxHashKey, modelSha),
+        idbPut(db, configHashKey, configSha),
       ]);
       log(`Cached ${meta.label} in IndexedDB`);
     } catch (e) {

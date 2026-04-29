@@ -1,10 +1,12 @@
 // sidepanel.js — Lexora Kokoro Edition
 import { state } from './js/state.js';
 import { dom } from './js/dom.js';
-import { mdToHtml, inlineMd, escHtml, encodeWAV, splitIntoChunks } from './js/utils.js';
-import { initUI, applyLesson } from './js/ui.js';
-import { initChat, addBubble } from './js/chat.js';
+import { encodeWAV, splitIntoChunks } from './js/utils.js';
+import { initUI } from './js/ui.js';
+import { initChat } from './js/chat.js';
 import { initExport } from './js/export.js';
+import { initMiniPlayerBridge } from './js/miniplayer-bridge.js';
+import { loadReadingProgressForLesson, saveReadingProgressForLesson } from './js/progress.js';
 
 import { initSettings, addStats } from './js/settings.js';
 // ── Debug Logging (console only) ──────────────────────────────────────────
@@ -32,7 +34,6 @@ const synth = window.speechSynthesis;
 let config = state.config;
 let seekerTimer = null;
 let currentAudioElement = null;
-let googleVoice = null;
 let sysUtteranceDurationEst = 0;
 let sysUtteranceT0 = 0;
 let sysUtteranceHighlight = false;
@@ -111,8 +112,6 @@ const statusLabel = dom.statusLabel;
 const downloadProgress = dom.downloadProgress;
 const downloadBar = dom.downloadBar;
 const downloadText = dom.downloadText;
-const ttsEngineSelect = dom.ttsEngineSelect;
-const kokoroDtypeSelect = dom.kokoroDtypeSelect;
 const kokoroDtypeRow = dom.kokoroDtypeRow;
 const browserAPI = state.browserAPI;
 
@@ -1083,7 +1082,6 @@ let needsResynthOnResume = false;
 
 voicePicker.addEventListener('change', () => {
   const val = voicePicker.value;
-  googleVoice = null;
 
   const wasSpeaking = speaking;
   const wasPaused = isPaused;
@@ -1340,18 +1338,15 @@ export function resetNarrationForNewLesson() {
 
   // Restore reading progress for the new lesson
   if (state.currentLesson && state.currentLesson.url && state.currentLesson.title !== 'Selected Text') {
-    const progressKey = 'progress_' + state.currentLesson.url;
-    browserAPI.storage.local.get([progressKey], (res) => {
-      if (res[progressKey] !== undefined) {
-        // We defer applying it slightly because sentences[] gets populated when user clicks Play or via other logic.
-        // But we can set sentenceIdx now so that playAudio() starts from there.
-        sentenceIdx = res[progressKey];
-        // Ensure UI reflects the position if total sentences is known
-        if (sentences.length > 0) {
-          seekBar.value = ((sentenceIdx) / sentences.length) * 100;
-        }
+    loadReadingProgressForLesson(browserAPI, state.currentLesson).then((v) => {
+      if (v === null || v === undefined) return;
+      // We defer applying it slightly because sentences[] gets populated when user clicks Play or via other logic.
+      // But we can set sentenceIdx now so that playAudio() starts from there.
+      sentenceIdx = v;
+      if (sentences.length > 0) {
+        seekBar.value = (sentenceIdx / sentences.length) * 100;
       }
-    });
+    }).catch(() => {});
   }
 }
 
@@ -1362,8 +1357,7 @@ function saveReadingProgress() {
   if (state.currentLesson.title === 'Selected Text') return;
   clearTimeout(progressSaveTimeout);
   progressSaveTimeout = setTimeout(() => {
-    const progressKey = 'progress_' + state.currentLesson.url;
-    browserAPI.storage.local.set({ [progressKey]: sentenceIdx });
+    saveReadingProgressForLesson(browserAPI, state.currentLesson, sentenceIdx);
   }, 1000);
 }
 
@@ -1391,32 +1385,7 @@ function advanceSentence(wordsOverride, timeMsOverride) {
 
 
 // ── Minimized overlay: parent page forwards prev / play / next via postMessage ──
-window.addEventListener('message', (event) => {
-  if (event.source !== window.parent) return;
-  const d = event.data;
-  if (!d || d.type !== 'lexora') return;
-  if (d.action === 'play-toggle') playBtn?.click();
-  else if (d.action === 'prev') prevBtn?.click();
-  else if (d.action === 'next') nextBtn?.click();
-});
-
-function syncMiniPlayerChrome() {
-  try {
-    if (window.parent !== window) {
-      let playGlyph = '▶';
-      const t = playBtn?.textContent || '';
-      if (/⏸|Pause/.test(t)) playGlyph = '⏸';
-      else if (/⏳|Loading/.test(t)) playGlyph = '⏳';
-      window.parent.postMessage({ type: 'lexora-ui', playGlyph }, '*');
-    }
-  } catch (_) {}
-}
-
-if (playBtn) {
-  const mo = new MutationObserver(() => syncMiniPlayerChrome());
-  mo.observe(playBtn, { childList: true, subtree: true, characterData: true });
-  syncMiniPlayerChrome();
-}
+initMiniPlayerBridge({ browserAPI, playBtn, prevBtn, nextBtn });
 
 // ── Keyboard Shortcuts ──────────────────────────────────────────────────────
 document.addEventListener('keydown', (e) => {

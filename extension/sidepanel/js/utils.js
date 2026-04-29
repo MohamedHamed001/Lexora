@@ -39,6 +39,144 @@ export function escHtml(s) {
   return (s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 }
 
+// ── Safe DOM rendering (no innerHTML) ───────────────────────────────────────
+
+function renderInlineMdTo(parent, text) {
+  // Very small inline subset: **bold**, *em*, `code`.
+  // Operates on plain text; no HTML parsing.
+  const s = String(text ?? '');
+  const re = /(\*\*[^*]+\*\*|\*[^*]+\*|`[^`]+`)/g;
+  let last = 0;
+  let m;
+  while ((m = re.exec(s))) {
+    const idx = m.index;
+    if (idx > last) parent.appendChild(document.createTextNode(s.slice(last, idx)));
+    const token = m[0];
+    if (token.startsWith('**') && token.endsWith('**')) {
+      const el = document.createElement('strong');
+      el.textContent = token.slice(2, -2);
+      parent.appendChild(el);
+    } else if (token.startsWith('*') && token.endsWith('*')) {
+      const el = document.createElement('em');
+      el.textContent = token.slice(1, -1);
+      parent.appendChild(el);
+    } else if (token.startsWith('`') && token.endsWith('`')) {
+      const el = document.createElement('code');
+      el.className = 'md-code';
+      el.textContent = token.slice(1, -1);
+      parent.appendChild(el);
+    } else {
+      parent.appendChild(document.createTextNode(token));
+    }
+    last = idx + token.length;
+  }
+  if (last < s.length) parent.appendChild(document.createTextNode(s.slice(last)));
+}
+
+export function mdToDomFragment(md) {
+  const lines = String(md ?? '').split('\n');
+  const frag = document.createDocumentFragment();
+  let inList = false;
+  let listEl = null;
+
+  const closeList = () => {
+    if (inList && listEl) frag.appendChild(listEl);
+    inList = false;
+    listEl = null;
+  };
+
+  for (const raw of lines) {
+    const line = raw.replace(/\s+$/g, '');
+    if (/^#{2,}\s+/.test(line)) {
+      closeList();
+      const h = document.createElement('h3');
+      h.className = 'md-h3';
+      renderInlineMdTo(h, line.replace(/^#{2,}\s+/, ''));
+      frag.appendChild(h);
+    } else if (/^#\s+/.test(line)) {
+      closeList();
+      const h = document.createElement('h2');
+      h.className = 'md-h2';
+      renderInlineMdTo(h, line.replace(/^#\s+/, ''));
+      frag.appendChild(h);
+    } else if (/^[-*]\s+/.test(line)) {
+      if (!inList) {
+        inList = true;
+        listEl = document.createElement('ul');
+        listEl.className = 'md-ul';
+      }
+      const li = document.createElement('li');
+      renderInlineMdTo(li, line.replace(/^[-*]\s+/, ''));
+      listEl.appendChild(li);
+    } else if (line.trim() === '') {
+      closeList();
+      const spacer = document.createElement('div');
+      spacer.style.height = '0.4em';
+      frag.appendChild(spacer);
+    } else {
+      closeList();
+      const p = document.createElement('p');
+      p.className = 'md-p';
+      renderInlineMdTo(p, line);
+      frag.appendChild(p);
+    }
+  }
+
+  closeList();
+  return frag;
+}
+
+export function clearMarks(root) {
+  if (!root) return;
+  const marks = root.querySelectorAll('mark');
+  for (const m of marks) {
+    const parent = m.parentNode;
+    if (!parent) continue;
+    parent.replaceChild(document.createTextNode(m.textContent || ''), m);
+    parent.normalize();
+  }
+}
+
+export function markMatches(root, term) {
+  const q = String(term ?? '').trim();
+  if (!root || !q) return;
+  const query = q.toLowerCase();
+
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+    acceptNode(node) {
+      const p = node.parentElement;
+      if (!p) return NodeFilter.FILTER_REJECT;
+      if (p.closest('mark,script,style,noscript')) return NodeFilter.FILTER_REJECT;
+      const t = node.nodeValue || '';
+      return t.toLowerCase().includes(query) ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT;
+    },
+  });
+
+  const nodes = [];
+  let n;
+  while ((n = walker.nextNode())) nodes.push(n);
+
+  for (const node of nodes) {
+    const text = node.nodeValue || '';
+    const lower = text.toLowerCase();
+    const idx = lower.indexOf(query);
+    if (idx < 0) continue;
+
+    const before = text.slice(0, idx);
+    const match = text.slice(idx, idx + q.length);
+    const after = text.slice(idx + q.length);
+
+    const frag = document.createDocumentFragment();
+    if (before) frag.appendChild(document.createTextNode(before));
+    const mark = document.createElement('mark');
+    mark.textContent = match;
+    frag.appendChild(mark);
+    if (after) frag.appendChild(document.createTextNode(after));
+
+    node.parentNode.replaceChild(frag, node);
+  }
+}
+
 // Float32Array → WAV Blob
 export function encodeWAV(samples, sampleRate = 24000) {
   const buf = new ArrayBuffer(44 + samples.length * 2);

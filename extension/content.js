@@ -12,9 +12,6 @@
     throw new Error('Extension runtime API not found (chrome.runtime/browser.runtime missing)');
   }
 
-  const BTN_ID    = 'ai-study-companion-btn';
-  const BTN_COLOR = 'rgba(109, 40, 217, 0.92)';
-
   // ── Overlay Injection Logic ──────────────────────────────────────────────
   let overlayHost = null;
   let overlayShadow = null;
@@ -22,6 +19,14 @@
   let isMinimized = false;
   let isDragging = false;
   let dragOffset = { x: 0, y: 0 };
+
+  function getExtensionOrigin() {
+    try {
+      return new URL(browserAPI.runtime.getURL('')).origin;
+    } catch (_) {
+      return null;
+    }
+  }
 
   function destroyOverlay() {
     try {
@@ -40,6 +45,8 @@
   function createOverlay() {
     if (overlayHost) return;
     if (window !== window.top) return;
+
+    const extensionOrigin = getExtensionOrigin();
 
     overlayHost = document.createElement('div');
     overlayHost.id = 'lexora-overlay-root';
@@ -214,11 +221,18 @@
     const gem = document.createElement('div');
     gem.className = 'minimized-gem';
     let gemDragStartPos = null;
+    const handshakeToken =
+      (typeof crypto !== 'undefined' && crypto.randomUUID)
+        ? crypto.randomUUID()
+        : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
 
     function postToSidepanel(action) {
       try {
         if (overlayIframe && overlayIframe.contentWindow) {
-          overlayIframe.contentWindow.postMessage({ type: 'lexora', action }, '*');
+          overlayIframe.contentWindow.postMessage(
+            { type: 'lexora', action, token: handshakeToken },
+            extensionOrigin || '*'
+          );
         }
       } catch (_) {}
     }
@@ -265,6 +279,8 @@
     window.addEventListener('message', (ev) => {
       if (!ev.data || ev.data.type !== 'lexora-ui') return;
       if (overlayIframe && ev.source !== overlayIframe.contentWindow) return;
+      if (extensionOrigin && ev.origin !== extensionOrigin) return;
+      if (ev.data.token !== handshakeToken) return;
       const g = ev.data.playGlyph;
       if (g && miniPlay) miniPlay.textContent = g;
     });
@@ -438,6 +454,13 @@
 
   // Currently highlighted span elements (for cleanup)
   let activeSpans = [];
+  // Map spoken word index -> span (fast lookup, avoids repeated querySelector)
+  let spanByChunkIdx = new Map();
+  let lastScrollAt = 0;
+
+  // Safety cutoff: span-wrapping is expensive on huge pages/SPAs.
+  const MAX_PAGE_WORDS_FOR_SPAN_WRAPPING = 20000;
+  let spanWrappingDisabled = false;
 
   // Watch for significant DOM mutations (e.g. SPA navigations) and invalidate the cache.
   const _pageWordsMO = new MutationObserver(() => {
@@ -568,10 +591,12 @@
       } catch (_) {}
     }
     activeSpans = [];
+    spanByChunkIdx = new Map();
   }
 
   function wrapAlignedWords(pairs) {
     activeSpans = [];
+    spanByChunkIdx = new Map();
 
     // Group by text node, preserving order
     const groups = [];
@@ -605,6 +630,7 @@
         span.textContent = fullText.substring(w.start, w.end);
         frag.appendChild(span);
         activeSpans.push(span);
+        spanByChunkIdx.set(w.chunkIdx, span);
         pos = w.end;
       }
 
@@ -632,6 +658,9 @@
       }
       if (wordCursor >= pageWords.length) wordCursor = 0;
 
+      // Disable span wrapping on very large pages to avoid heavy DOM mutation.
+      spanWrappingDisabled = !!(pageWords && pageWords.length > MAX_PAGE_WORDS_FOR_SPAN_WRAPPING);
+
       const chunkWords = chunkText.trim().split(/\s+/);
       let matchStart = findChunkStart(chunkWords);
 
@@ -650,7 +679,9 @@
 
       if (matchStart >= 0) {
         const pairs = alignChunkToPage(chunkWords, matchStart);
-        wrapAlignedWords(pairs);
+        if (!spanWrappingDisabled) {
+          wrapAlignedWords(pairs);
+        }
         if (pairs.length) {
           wordCursor = pairs[pairs.length - 1].pageIdx + 1;
         }
@@ -661,13 +692,16 @@
     const prev = document.querySelector('.lexora-hl-active');
     if (prev) prev.classList.remove('lexora-hl-active');
 
-    const target = document.querySelector(`[data-lw="${wordIndex}"]`);
+    // If span wrapping is disabled, we skip word-level highlight to keep the page stable.
+    if (spanWrappingDisabled) return;
+
+    const target = spanByChunkIdx.get(wordIndex) || null;
     const fallbackTarget = (() => {
       if (target) return target;
       // If this exact wordIndex wasn't aligned into a span, highlight the nearest
       // previous aligned word so highlighting appears continuous.
       for (let back = 1; back <= 10; back++) {
-        const t = document.querySelector(`[data-lw="${wordIndex - back}"]`);
+        const t = spanByChunkIdx.get(wordIndex - back) || null;
         if (t) return t;
       }
       return null;
@@ -675,7 +709,11 @@
 
     if (fallbackTarget) {
       fallbackTarget.classList.add('lexora-hl-active');
-      fallbackTarget.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      const now = Date.now();
+      if (now - lastScrollAt > 450) {
+        lastScrollAt = now;
+        fallbackTarget.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      }
       return;
     }
 

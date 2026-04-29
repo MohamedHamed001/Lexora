@@ -1,5 +1,11 @@
 // background.js
-try { importScripts('capture-clean.js'); } catch (_) { /* Firefox loads via manifest scripts[] */ }
+try {
+  importScripts('protocol.js');
+  importScripts('storage.js');
+  importScripts('capture-clean.js');
+} catch (_) {
+  // Some browsers load SW dependencies differently; keep the SW resilient.
+}
 
 const browserAPI =
   (typeof chrome !== 'undefined' && chrome?.runtime?.getURL ? chrome : null) ||
@@ -9,40 +15,194 @@ if (!browserAPI) {
   throw new Error('Extension runtime API not found (chrome.runtime/browser.runtime missing)');
 }
 
-browserAPI.runtime.onMessage.addListener((request, sender, sendResponse) => {
-  // ── LM Studio proxy ──────────────────────────────────────────────────────
-  if (request.action === 'proxyFetch') {
-    fetch(request.url, {
-      method: request.method || 'GET',
-      headers: { 'Content-Type': 'application/json', ...(request.headers || {}) },
-      body: request.body ? JSON.stringify(request.body) : undefined
-    })
-      .then(r => r.json())
-      .then(data => sendResponse({ success: true, data }))
-      .catch(err  => sendResponse({ success: false, error: err.message }));
-    return true;
+// ── Config cache (avoid async storage lookups per request) ──────────────────
+const EXTENSION_ORIGIN = (() => {
+  try {
+    return new URL(browserAPI.runtime.getURL('')).origin;
+  } catch (_) {
+    return null;
   }
+})();
 
-  // ── Word highlight relay (sidepanel → content script in ALL frames) ─────
-  if (request.action === 'highlightWord' || request.action === 'clearHighlight') {
+let _lexoraConfigCache = null;
+const STORAGE_KEYS = (globalThis.LexoraStorage && LexoraStorage.KEYS) || { CONFIG: 'lexoraConfig' };
+browserAPI.storage?.local?.get?.([STORAGE_KEYS.CONFIG], (res) => {
+  if (res && res[STORAGE_KEYS.CONFIG]) _lexoraConfigCache = res[STORAGE_KEYS.CONFIG];
+});
+browserAPI.storage?.onChanged?.addListener?.((changes, areaName) => {
+  if (areaName !== 'local') return;
+  if (changes[STORAGE_KEYS.CONFIG]) _lexoraConfigCache = changes[STORAGE_KEYS.CONFIG].newValue || null;
+});
+
+function isExtensionSender(sender) {
+  // Sidepanel (extension page) should have sender.url set to chrome-extension://.../...
+  // Content scripts typically do not.
+  if (!sender) return false;
+  if (sender.id && browserAPI.runtime?.id && sender.id !== browserAPI.runtime.id) return false;
+  if (!EXTENSION_ORIGIN) return false;
+  if (typeof sender.url !== 'string') return false;
+  try {
+    return new URL(sender.url).origin === EXTENSION_ORIGIN;
+  } catch (_) {
+    return false;
+  }
+}
+
+function getConfiguredChatEndpointUrl() {
+  const url = _lexoraConfigCache && typeof _lexoraConfigCache.url === 'string' ? _lexoraConfigCache.url : null;
+  if (!url) return null;
+  try {
+    return new URL(url);
+  } catch (_) {
+    return null;
+  }
+}
+
+function isAllowedProxyUrl(u) {
+  // Allow only the configured endpoint origin by default.
+  const configured = getConfiguredChatEndpointUrl();
+  if (configured) {
+    return u.origin === configured.origin;
+  }
+  // Fallback (should be rare): allow localhost only.
+  return u.hostname === '127.0.0.1' || u.hostname === 'localhost';
+}
+
+function pickAllowedHeaders(h) {
+  const out = {};
+  const src = h && typeof h === 'object' ? h : {};
+  // Allowlist only what we need.
+  if (typeof src.Authorization === 'string') out.Authorization = src.Authorization;
+  if (typeof src.authorization === 'string') out.Authorization = src.authorization;
+  if (typeof src.Accept === 'string') out.Accept = src.Accept;
+  if (typeof src.accept === 'string') out.Accept = src.accept;
+  return out;
+}
+
+function handleProxyFetch(request, sender, sendResponse) {
+    // Only the extension UI should be allowed to use the proxy.
+    if (!isExtensionSender(sender)) {
+      sendResponse({ success: false, error: 'Unauthorized sender.' });
+      return false;
+    }
+
+    // Validate URL + restrict destination.
+    let targetUrl;
+    try {
+      targetUrl = new URL(request.url);
+    } catch (_) {
+      sendResponse({ success: false, error: 'Invalid URL.' });
+      return false;
+    }
+    if (!isAllowedProxyUrl(targetUrl)) {
+      sendResponse({ success: false, error: 'Blocked URL (not in allowlist).' });
+      return false;
+    }
+
+    // Restrict method.
+    const method = (request.method || 'POST').toUpperCase();
+    if (method !== 'POST') {
+      sendResponse({ success: false, error: 'Blocked method.' });
+      return false;
+    }
+
+    // Basic payload cap (avoid huge storage/DoS payloads).
+    const bodyObj = request.body == null ? null : request.body;
+    let bodyJson = undefined;
+    if (bodyObj != null) {
+      try {
+        bodyJson = JSON.stringify(bodyObj);
+      } catch (_) {
+        sendResponse({ success: false, error: 'Invalid JSON body.' });
+        return false;
+      }
+      if (bodyJson.length > 250_000) {
+        sendResponse({ success: false, error: 'Request body too large.' });
+        return false;
+      }
+    }
+
+    const headers = {
+      'Content-Type': 'application/json',
+      ...pickAllowedHeaders(request.headers),
+    };
+
+    fetch(targetUrl.toString(), { method, headers, body: bodyJson })
+      .then(async (r) => {
+        const contentType = r.headers.get('content-type') || '';
+        const text = await r.text();
+
+        let data = null;
+        let jsonOk = false;
+        try {
+          data = JSON.parse(text);
+          jsonOk = true;
+        } catch (_) {}
+
+        if (!r.ok) {
+          const snippet = (text || '').slice(0, 800);
+          const error =
+            (jsonOk && data && (data.error?.message || data.message)) ||
+            `HTTP ${r.status}`;
+          throw Object.assign(new Error(String(error)), {
+            __lexoraHttp: {
+              ok: false,
+              status: r.status,
+              contentType,
+              snippet,
+              data: jsonOk ? data : null,
+            },
+          });
+        }
+
+        if (!jsonOk) {
+          throw Object.assign(new Error(`Non-JSON response (HTTP ${r.status}).`), {
+            __lexoraHttp: {
+              ok: true,
+              status: r.status,
+              contentType,
+              snippet: (text || '').slice(0, 800),
+            },
+          });
+        }
+
+        return { data, meta: { ok: true, status: r.status, contentType } };
+      })
+      .then(({ data, meta }) => sendResponse({ success: true, data, meta }))
+      .catch((err) => {
+        const http = err && err.__lexoraHttp ? err.__lexoraHttp : null;
+        sendResponse({ success: false, error: err?.message || String(err), http });
+      });
+    return true;
+}
+
+function handleHighlightRelay(request) {
     browserAPI.tabs.query({ active: true, currentWindow: true }, tabs => {
       const tab = tabs[0];
       if (!tab) return;
-      browserAPI.webNavigation.getAllFrames({ tabId: tab.id }, frames => {
-        if (!frames) {
-          browserAPI.tabs.sendMessage(tab.id, request).catch(() => {});
-          return;
-        }
-        for (const frame of frames) {
-          browserAPI.tabs.sendMessage(tab.id, request, { frameId: frame.frameId }).catch(() => {});
-        }
-      });
+      // If optional `webNavigation` permission isn't granted, fall back to top frame only.
+      if (!browserAPI.webNavigation || typeof browserAPI.webNavigation.getAllFrames !== 'function') {
+        browserAPI.tabs.sendMessage(tab.id, request).catch(() => {});
+        return;
+      }
+      try {
+        browserAPI.webNavigation.getAllFrames({ tabId: tab.id }, frames => {
+          if (!frames) {
+            browserAPI.tabs.sendMessage(tab.id, request).catch(() => {});
+            return;
+          }
+          for (const frame of frames) {
+            browserAPI.tabs.sendMessage(tab.id, request, { frameId: frame.frameId }).catch(() => {});
+          }
+        });
+      } catch (_) {
+        browserAPI.tabs.sendMessage(tab.id, request).catch(() => {});
+      }
     });
     return false;
-  }
+}
 
-  // ── Text Selection Actions ────────────────────────────────────────────────
-  if (request.action === 'captureText' || request.action === 'askAiAboutText') {
+function handleSelectionActions(request, sender) {
     // If it's just reading, we create a pseudo-lesson
     if (request.action === 'captureText') {
       const pseudoLesson = {
@@ -58,21 +218,35 @@ browserAPI.runtime.onMessage.addListener((request, sender, sendResponse) => {
     // Broadcast to sidepanel so it can update its UI or fill the chat
     browserAPI.runtime.sendMessage(request).catch(() => {});
     return false;
-  }
+}
 
-  // ── Capture: triggered from the overlay or button ────────────────────────
-  if (request.action === 'triggerDeepCapture') {
-    browserAPI.tabs.query({ active: true, currentWindow: true }, tabs => {
-      const tab = tabs[0];
-      if (!tab) {
-        sendResponse({ success: false, error: 'No active tab' });
+function handleTriggerDeepCapture(request, sendResponse) {
+  let responded = false;
+  const respondOnce = (payload) => {
+    if (responded) return;
+    responded = true;
+    try { sendResponse(payload); } catch (_) {}
+  };
+  // Hard timeout: never leave UI hanging (MV3 SW + permissions can fail silently).
+  const timeoutId = setTimeout(() => {
+    respondOnce({ success: false, error: 'Capture timed out.' });
+  }, 20000);
+
+    const requestedTabId = Number.isInteger(request?.tabId) ? request.tabId : null;
+    const captureTabId = (tabId) => {
+      if (!tabId) {
+        clearTimeout(timeoutId);
+        respondOnce({ success: false, error: 'No active tab' });
         return;
       }
 
-      browserAPI.scripting.executeScript(
-        {
-          target: { tabId: tab.id, allFrames: true },
-          func: () => {
+      try {
+        (async () => {
+          let results;
+          try {
+            results = await browserAPI.scripting.executeScript({
+              target: { tabId, allFrames: true },
+              func: () => {
             // Never capture our own sidepanel / extension UI (injected with allFrames: true).
             const p = location.protocol;
             if (
@@ -181,64 +355,76 @@ browserAPI.runtime.onMessage.addListener((request, sender, sendResponse) => {
               content,
               url:     location.href,
             };
-          },
-        },
-        results => {
-          (async () => {
-            try {
-              if (browserAPI.runtime.lastError) {
-                const errMsg =
-                  browserAPI.runtime.lastError?.message ||
-                  'Capture failed (runtime error)';
-                sendResponse({ success: false, error: errMsg });
-                return;
-              }
+              },
+            });
+          } catch (e) {
+            clearTimeout(timeoutId);
+            respondOnce({ success: false, error: e?.message || 'Capture failed.' });
+            return;
+          }
 
-              const valid = (results || [])
-                .map(r => r.result)
-                .filter(r => r && r.content && r.content.length > 80);
+          try {
+            const valid = (results || [])
+              .map(r => r.result)
+              .filter(r => r && r.content && r.content.length > 80);
 
-              if (!valid.length) {
-                sendResponse({ success: false, error: 'No content found on this page.' });
-                browserAPI.tabs.sendMessage(tab.id, { action: 'captureFinished', success: false });
-                return;
-              }
-
-              const bestRaw = valid.reduce((a, b) => a.content.length >= b.content.length ? a : b);
-              const best = cleanCapturedLessonNonAi(bestRaw);
-
-              browserAPI.storage.local.set({ currentLesson: best });
-              sendResponse({ success: true, data: best });
-              browserAPI.tabs.sendMessage(tab.id, { action: 'captureFinished', success: true });
-            } catch (e) {
-              // Never leave the UI hanging: fall back to raw capture if anything goes wrong.
-              try {
-                const fallback = (results || [])
-                  .map(r => r.result)
-                  .filter(r => r && r.content && r.content.length > 80)
-                  .reduce((a, b) => a.content.length >= b.content.length ? a : b, null);
-                if (fallback) {
-                  const polished = cleanCapturedLessonNonAi(fallback);
-                  browserAPI.storage.local.set({ currentLesson: polished });
-                  sendResponse({ success: true, data: polished });
-                  browserAPI.tabs.sendMessage(tab.id, { action: 'captureFinished', success: true });
-                } else {
-                  sendResponse({ success: false, error: e?.message || 'Capture failed' });
-                  browserAPI.tabs.sendMessage(tab.id, { action: 'captureFinished', success: false });
-                }
-              } catch (_) {
-                sendResponse({ success: false, error: e?.message || 'Capture failed' });
-              }
+            if (!valid.length) {
+              clearTimeout(timeoutId);
+              respondOnce({ success: false, error: 'No content found on this page.' });
+              browserAPI.tabs.sendMessage(tabId, { action: 'captureFinished', success: false });
+              return;
             }
-          })();
-        }
-      );
+
+            const bestRaw = valid.reduce((a, b) => a.content.length >= b.content.length ? a : b);
+            const best = cleanCapturedLessonNonAi(bestRaw);
+
+            browserAPI.storage.local.set({ currentLesson: best });
+            clearTimeout(timeoutId);
+            respondOnce({ success: true, data: best });
+            browserAPI.tabs.sendMessage(tabId, { action: 'captureFinished', success: true });
+          } catch (_e) {
+            // Never leave the UI hanging: fall back to raw capture if anything goes wrong.
+            try {
+              const fallback = (results || [])
+                .map(r => r.result)
+                .filter(r => r && r.content && r.content.length > 80)
+                .reduce((a, b) => a.content.length >= b.content.length ? a : b, null);
+              if (fallback) {
+                const polished = cleanCapturedLessonNonAi(fallback);
+                browserAPI.storage.local.set({ currentLesson: polished });
+                clearTimeout(timeoutId);
+                respondOnce({ success: true, data: polished });
+                browserAPI.tabs.sendMessage(tabId, { action: 'captureFinished', success: true });
+              } else {
+                clearTimeout(timeoutId);
+                respondOnce({ success: false, error: _e?.message || 'Capture failed' });
+                browserAPI.tabs.sendMessage(tabId, { action: 'captureFinished', success: false });
+              }
+            } catch (_) {
+              clearTimeout(timeoutId);
+              respondOnce({ success: false, error: _e?.message || 'Capture failed' });
+            }
+          }
+        })();
+      } catch (e) {
+        clearTimeout(timeoutId);
+        respondOnce({ success: false, error: e?.message || 'Capture failed' });
+      }
+    };
+
+    if (requestedTabId) {
+      captureTabId(requestedTabId);
+      return true;
+    }
+
+    browserAPI.tabs.query({ active: true, currentWindow: true }, tabs => {
+      const tab = tabs[0];
+      captureTabId(tab && tab.id);
     });
     return true; // async
-  }
+}
 
-  // ── Probe: is current page capturable? (for UI indicator) ────────────────
-  if (request.action === 'probeCapturable') {
+function handleProbeCapturable(request, sendResponse) {
     browserAPI.tabs.query({ active: true, currentWindow: true }, (tabs) => {
       const tab = tabs[0];
       if (!tab) {
@@ -329,18 +515,55 @@ browserAPI.runtime.onMessage.addListener((request, sender, sendResponse) => {
             } else {
               sendResponse({ success: true, capturable: false, status: 'not_ready', reason: 'No readable content detected.' });
             }
-          } catch (e) {
-            sendResponse({ success: true, capturable: false, status: 'not_ready', reason: e?.message || 'Probe failed.' });
+          } catch (_e) {
+            sendResponse({ success: true, capturable: false, status: 'not_ready', reason: _e?.message || 'Probe failed.' });
           }
         }
       );
     });
     return true; // async
+}
+
+function handleAutoCaptureSave(request) {
+  if (request.data) {
+    try {
+      const polished = cleanCapturedLessonNonAi(request.data);
+      browserAPI.storage.local.set({ currentLesson: polished });
+    } catch (_e) {
+      browserAPI.storage.local.set({ currentLesson: request.data });
+    }
+  }
+  return false;
+}
+
+browserAPI.runtime.onMessage.addListener((request, sender, sendResponse) => {
+  const action =
+    (globalThis.LexoraProtocol && LexoraProtocol.getAction(request)) ||
+    (request && typeof request.action === 'string' ? request.action : null);
+
+  switch (action) {
+    case 'proxyFetch':
+      return handleProxyFetch(request, sender, sendResponse);
+    case 'highlightWord':
+    case 'clearHighlight':
+      return handleHighlightRelay(request);
+    case 'captureText':
+    case 'askAiAboutText':
+      return handleSelectionActions(request, sender);
+    case 'triggerDeepCapture':
+      return handleTriggerDeepCapture(request, sendResponse);
+    case 'probeCapturable':
+      return handleProbeCapturable(request, sendResponse);
+    case 'autoCaptureSave':
+      return handleAutoCaptureSave(request);
+    default:
+      // Unknown action: ignore for forward-compat.
+      return false;
   }
 });
 
 // ── Action Click: Toggle Overlay ────────────────────────────────────────────
-async function openSidebarFallback(tab) {
+async function openSidebarFallback(_tab) {
   try {
     // Firefox: sidebar_action
     if (browserAPI.sidebarAction && typeof browserAPI.sidebarAction.open === 'function') {
@@ -360,7 +583,7 @@ async function openSidebarFallback(tab) {
   return false;
 }
 
-browserAPI.action.onClicked.addListener((tab) => {
+browserAPI.action.onClicked.addListener((_tab) => {
   // Prefer overlay (best UX on normal webpages). If the page blocks injection (new tab/about:),
   // fall back to opening the browser sidebar when available (Firefox).
   const sendToTab = (tabId, msg) =>
@@ -376,16 +599,16 @@ browserAPI.action.onClicked.addListener((tab) => {
       }
     });
 
-  sendToTab(tab.id, { action: 'toggleOverlay' })
+  sendToTab(_tab.id, { action: 'toggleOverlay' })
     .catch(async () => {
       // If messaging failed, inject the content script then try again.
       await browserAPI.scripting.executeScript({
-        target: { tabId: tab.id, allFrames: true },
+        target: { tabId: _tab.id, allFrames: true },
         files: ['content.js'],
       });
-      await sendToTab(tab.id, { action: 'toggleOverlay' });
+      await sendToTab(_tab.id, { action: 'toggleOverlay' });
     })
-    .catch(() => openSidebarFallback(tab))
+    .catch(() => openSidebarFallback(_tab))
     .catch(() => {});
 });
 
@@ -398,32 +621,30 @@ if (browserAPI.webNavigation && browserAPI.webNavigation.onCompleted) {
           // Trigger capture for this tab
           // Wait a moment for dynamic content to load before capturing
           setTimeout(() => {
-            browserAPI.scripting.executeScript({
-              target: { tabId: details.tabId },
-              func: () => {
-                if (window.lexoraCaptureText) {
-                  const data = window.lexoraCaptureText();
-                  if (data && data.content && data.content.length > 80) {
-                    chrome.runtime.sendMessage({ action: 'autoCaptureSave', data });
+            browserAPI.scripting.executeScript(
+              {
+                target: { tabId: details.tabId },
+                func: () => {
+                  if (window.lexoraCaptureText) {
+                    const data = window.lexoraCaptureText();
+                    if (data && data.content && data.content.length > 80) return data;
                   }
-                }
+                  return null;
+                },
+              },
+              (results) => {
+                try {
+                  if (browserAPI.runtime.lastError) return;
+                  const best = (results || [])
+                    .map((r) => r.result)
+                    .find((r) => r && r.content && r.content.length > 80);
+                  if (best) handleAutoCaptureSave({ action: 'autoCaptureSave', data: best });
+                } catch (_) {}
               }
-            }).catch(() => {});
+            );
           }, 2000);
         }
       });
     }
   });
 }
-
-// Handle autoCaptureSave
-browserAPI.runtime.onMessage.addListener((request, sender, sendResponse) => {
-  if (request.action === 'autoCaptureSave' && request.data) {
-    try {
-      const polished = cleanCapturedLessonNonAi(request.data);
-      browserAPI.storage.local.set({ currentLesson: polished });
-    } catch (e) {
-      browserAPI.storage.local.set({ currentLesson: request.data });
-    }
-  }
-});

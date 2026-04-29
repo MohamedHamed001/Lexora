@@ -101,3 +101,7 @@ function isBoilerplateBlock(norm) {
   if (t.length > 140) return false;
   return patterns.some((re) => re.test(t));
 }
+
+// Expose for classic-script consumers (MV3 SW uses importScripts).
+globalThis.cleanCapturedMarkdownNonAi = cleanCapturedMarkdownNonAi;
+globalThis.cleanCapturedLessonNonAi = cleanCapturedLessonNonAi;

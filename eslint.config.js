@@ -1,0 +1,64 @@
+export default [
+  {
+    ignores: [
+      "dist/**",
+      "extension/libs/**",
+      "extension/sidepanel/ort*.{js,wasm,mjs}",
+      "extension/sidepanel/*.wasm",
+      "extension/sidepanel/*.onnx",
+      "extension/sidepanel/kokoro.web.js",
+      "extension/sidepanel/piper_phonemize.js",
+      "extension/sidepanel/piper-worker.js",
+      "extension/sidepanel/kokoro-worker.js"
+    ],
+  },
+  {
+    // Node-context files (tests, tooling, configs)
+    files: ["**/*.config.js", "playwright.config.js", "extension/tests/**/*.js", "extension/e2e/**/*.js"],
+    languageOptions: {
+      globals: {
+        process: "readonly",
+      },
+    },
+  },
+  {
+    files: ["**/*.js"],
+    languageOptions: {
+      ecmaVersion: "latest",
+      sourceType: "module",
+      globals: {
+        URL: "readonly",
+        chrome: "readonly",
+        browser: "readonly",
+        indexedDB: "readonly",
+        self: "readonly",
+        importScripts: "readonly",
+        fetch: "readonly",
+        setTimeout: "readonly",
+        clearTimeout: "readonly",
+        setInterval: "readonly",
+        clearInterval: "readonly",
+        window: "readonly",
+        document: "readonly",
+        location: "readonly",
+        crypto: "readonly",
+        console: "readonly",
+        performance: "readonly",
+        Worker: "readonly",
+        Audio: "readonly",
+        Blob: "readonly",
+        SpeechSynthesisUtterance: "readonly",
+        NodeFilter: "readonly",
+        MutationObserver: "readonly",
+        LexoraProtocol: "readonly",
+        LexoraStorage: "readonly",
+        cleanCapturedLessonNonAi: "readonly"
+      },
+    },
+    rules: {
+      "no-unused-vars": ["warn", { argsIgnorePattern: "^_", caughtErrorsIgnorePattern: "^_" }],
+      "no-undef": "error",
+    },
+  },
+];
+

@@ -1,6 +1,12 @@
 import { state } from './state.js';
 import { dom } from './dom.js';
-import { mdToHtml, escHtml } from './utils.js';
+import { mdToDomFragment, clearMarks, markMatches } from './utils.js';
+
+const A = (globalThis.LexoraProtocol && LexoraProtocol.ACTIONS) || null;
+const K = (globalThis.LexoraStorage && LexoraStorage.KEYS) || {
+  CURRENT_LESSON: 'currentLesson',
+  AUTO_PLAY_SELECTED_TEXT: 'autoPlaySelectedText',
+};
 
 function showNoSupportedContent(message) {
   const msg = (message || 'No content found on this page.').trim();
@@ -9,16 +15,17 @@ function showNoSupportedContent(message) {
   if (dom.titleEl) dom.titleEl.textContent = '';
 
   if (dom.lessonText) {
-    dom.lessonText.innerHTML = `
-      <div class="no-content-card">
-        <div class="no-content-title">No supported content detected</div>
-        <div class="no-content-body">
-          ${escHtml(msg)}
-          <br><br>
-          If you’re sure the page contains readable content, wait a moment (large files can take time), then refresh once and try capturing again.
-        </div>
-      </div>
-    `.trim();
+    const card = document.createElement('div');
+    card.className = 'no-content-card';
+    const title = document.createElement('div');
+    title.className = 'no-content-title';
+    title.textContent = 'No supported content detected';
+    const body = document.createElement('div');
+    body.className = 'no-content-body';
+    body.textContent = msg + '\n\nIf you’re sure the page contains readable content, wait a moment (large files can take time), then refresh once and try capturing again.';
+    card.appendChild(title);
+    card.appendChild(body);
+    dom.lessonText.replaceChildren(card);
   }
 
   if (dom.exportInfo) {
@@ -26,7 +33,10 @@ function showNoSupportedContent(message) {
   }
 
   if (dom.chatMessages) {
-    dom.chatMessages.innerHTML = `<div class="ai-bubble">⚠️ ${escHtml(msg)}<br><br>Try capturing again after the page finishes loading.</div>`;
+    const b = document.createElement('div');
+    b.className = 'ai-bubble';
+    b.textContent = `⚠️ ${msg}\n\nTry capturing again after the page finishes loading.`;
+    dom.chatMessages.replaceChildren(b);
     state.chatHistory = [];
   }
 
@@ -54,12 +64,12 @@ export function initUI() {
       dom.captureBtn.disabled      = true;
       if (dom.captureStatus) dom.captureStatus.textContent = '';
 
-      state.browserAPI.runtime.sendMessage({ action: 'triggerDeepCapture' }, (resp) => {
+      state.browserAPI.runtime.sendMessage({ action: A ? A.TRIGGER_DEEP_CAPTURE : 'triggerDeepCapture' }, (resp) => {
         dom.captureBtn.disabled = false;
 
         if (resp && resp.success) {
           state.currentLesson = resp.data;
-          state.browserAPI.storage.local.set({ currentLesson: state.currentLesson });
+          state.browserAPI.storage.local.set({ [K.CURRENT_LESSON]: state.currentLesson });
           applyLesson(state.currentLesson);
 
           dom.captureBtn.textContent = '✅ Captured';
@@ -77,8 +87,20 @@ export function initUI() {
   }
 
   // ── Capture readiness indicator ───────────────────────────────────────────
-  const setReady = ({ status, reason }) => {
+  let _lastReadyStatus = null;
+  let _lastReadyReason = null;
+  let _probeInFlight = false;
+
+  let setReady = ({ status, reason }) => {
     if (!dom.captureReady) return;
+
+    // Avoid repainting the badge if nothing actually changed.
+    const nextStatus = status || 'unknown';
+    const nextReason = reason || '';
+    if (_lastReadyStatus === nextStatus && _lastReadyReason === nextReason) return;
+    _lastReadyStatus = nextStatus;
+    _lastReadyReason = nextReason;
+
     dom.captureReady.classList.remove(
       'capture-ready--unknown',
       'capture-ready--ready',
@@ -86,7 +108,7 @@ export function initUI() {
       'capture-ready--restricted'
     );
 
-    const s = status || 'unknown';
+    const s = nextStatus;
     const mapClass =
       s === 'ready' ? 'capture-ready--ready'
       : s === 'restricted' ? 'capture-ready--restricted'
@@ -102,56 +124,94 @@ export function initUI() {
         : s === 'not_ready' ? 'Not ready'
         : 'Checking';
     }
-    dom.captureReady.title = reason || 'Checking page…';
+    dom.captureReady.title = nextReason || 'Checking page…';
   };
 
   async function probeCapturableOnce() {
-    setReady({ status: 'unknown', reason: 'Checking page…' });
+    if (_probeInFlight) return;
+    _probeInFlight = true;
+
+    // Don't flicker "Ready" → "Checking" just because we're refreshing in the background.
+    if (_lastReadyStatus !== 'ready') {
+      setReady({ status: 'unknown', reason: 'Checking page…' });
+    }
     try {
       // Support both callback-style (chrome) and promise-style (browser) APIs.
-      const maybePromise = state.browserAPI.runtime.sendMessage({ action: 'probeCapturable' }, (resp) => {
+      const maybePromise = state.browserAPI.runtime.sendMessage({ action: A ? A.PROBE_CAPTURABLE : 'probeCapturable' }, (resp) => {
+        _probeInFlight = false;
         if (resp?.success) setReady({ status: resp.status, reason: resp.reason });
         else setReady({ status: 'unknown', reason: resp?.error || 'Checking page…' });
       });
 
       if (maybePromise && typeof maybePromise.then === 'function') {
         const resp = await maybePromise;
+        _probeInFlight = false;
         if (resp?.success) setReady({ status: resp.status, reason: resp.reason });
         else setReady({ status: 'unknown', reason: resp?.error || 'Checking page…' });
       }
     } catch (e) {
+      _probeInFlight = false;
       setReady({ status: 'restricted', reason: e?.message || 'This page blocks extraction.' });
     }
   }
 
-  // Kick off immediately, then refresh periodically (captures SPA/PDF viewer readiness).
+  // Kick off immediately, then refresh until stable (captures SPA/PDF viewer readiness).
   probeCapturableOnce();
-  setInterval(probeCapturableOnce, 1800);
+  let probeInterval = null;
+  let stableReadyCount = 0;
+  const startProbeLoop = () => {
+    if (probeInterval) return;
+    probeInterval = setInterval(probeCapturableOnce, 1800);
+  };
+  const stopProbeLoop = () => {
+    if (probeInterval) clearInterval(probeInterval);
+    probeInterval = null;
+  };
+  startProbeLoop();
+
+  // Stop polling once we see "ready" consistently; restart when tab/page likely changed.
+  const _setReady = setReady;
+  const setReadyWrapped = (p) => {
+    _setReady(p);
+    if (p?.status === 'ready') {
+      stableReadyCount++;
+      if (stableReadyCount >= 3) stopProbeLoop();
+    } else if (p?.status !== 'unknown') {
+      stableReadyCount = 0;
+      startProbeLoop();
+    }
+  };
+  // Replace local function reference used by probeCapturableOnce
+  setReady = setReadyWrapped;
+
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') startProbeLoop();
+  });
 
   // Refresh UI if storage updates (e.g. overlay/sidepanel sync).
   state.browserAPI.storage.onChanged.addListener((changes, areaName) => {
     if (areaName !== 'local') return;
-    if (changes.currentLesson?.newValue) {
-      state.currentLesson = changes.currentLesson.newValue;
+    if (changes[K.CURRENT_LESSON]?.newValue) {
+      state.currentLesson = changes[K.CURRENT_LESSON].newValue;
       applyLesson(state.currentLesson);
     }
   });
 
   state.browserAPI.runtime.onMessage.addListener((msg) => {
-    if (msg.action === 'askAiAboutText') {
+    if (msg.action === (A ? A.ASK_AI_ABOUT_TEXT : 'askAiAboutText')) {
       const chatTab = document.querySelector('.tab[data-tab="chat"]');
       if (chatTab) chatTab.click();
       import('./chat.js').then(({ submitQuery }) => {
         submitQuery(`Explain this text:\n\n"${msg.text}"`, false);
       });
-    } else if (msg.action === 'captureText') {
+    } else if (msg.action === (A ? A.CAPTURE_TEXT : 'captureText')) {
        // Apply immediately so we reset narration state, then auto-start.
        state.currentLesson = {
          title: 'Selected Text',
          content: msg.text || '',
          url: state.currentLesson?.url || '',
        };
-       state.browserAPI.storage.local.set({ currentLesson: state.currentLesson, autoPlaySelectedText: true });
+       state.browserAPI.storage.local.set({ [K.CURRENT_LESSON]: state.currentLesson, [K.AUTO_PLAY_SELECTED_TEXT]: true });
        applyLesson(state.currentLesson);
 
        // Since it updates storage, we just switch to audio tab to play
@@ -192,7 +252,7 @@ export function initUI() {
       if (!term) {
         children.forEach(el => {
           el.style.display = '';
-          el.innerHTML = el.innerHTML.replace(/<mark>([^<]+)<\/mark>/gi, '$1');
+          clearMarks(el);
         });
         return;
       }
@@ -207,9 +267,8 @@ export function initUI() {
             if (li.textContent.toLowerCase().includes(term)) {
               li.style.display = '';
               hasMatch = true;
-              let html = li.innerHTML.replace(/<mark>([^<]+)<\/mark>/gi, '$1');
-              const regex = new RegExp(`(${term.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\\\$&')})`, 'gi');
-              li.innerHTML = html.replace(regex, '<mark>$1</mark>');
+              clearMarks(li);
+              markMatches(li, term);
             } else {
               li.style.display = 'none';
             }
@@ -221,9 +280,8 @@ export function initUI() {
         const text = el.textContent || '';
         if (text.toLowerCase().includes(term)) {
           el.style.display = '';
-          let html = el.innerHTML.replace(/<mark>([^<]+)<\/mark>/gi, '$1');
-          const regex = new RegExp(`(${term.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\\\$&')})`, 'gi');
-          el.innerHTML = html.replace(regex, '<mark>$1</mark>');
+          clearMarks(el);
+          markMatches(el, term);
         } else {
           el.style.display = 'none';
         }
@@ -248,7 +306,7 @@ export function applyLesson(lesson) {
   if (dom.lessonHeader) dom.lessonHeader.style.display = 'block';
 
   if (dom.lessonText) {
-    dom.lessonText.innerHTML = mdToHtml(lesson.content || '');
+    dom.lessonText.replaceChildren(mdToDomFragment(lesson.content || ''));
   }
 
   if (dom.exportInfo) {
@@ -256,7 +314,14 @@ export function applyLesson(lesson) {
   }
 
   if (dom.chatMessages) {
-    dom.chatMessages.innerHTML = `<div class="ai-bubble">✅ Captured <strong>${escHtml(lesson.title)}</strong>. Ask me anything!</div>`;
+    const b = document.createElement('div');
+    b.className = 'ai-bubble';
+    b.appendChild(document.createTextNode('✅ Captured '));
+    const strong = document.createElement('strong');
+    strong.textContent = lesson.title || '';
+    b.appendChild(strong);
+    b.appendChild(document.createTextNode('. Ask me anything!'));
+    dom.chatMessages.replaceChildren(b);
     state.chatHistory = []; // Reset conversation on new capture
   }
 }

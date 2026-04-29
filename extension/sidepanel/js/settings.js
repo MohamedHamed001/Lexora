@@ -4,15 +4,92 @@ import { applyLesson } from './ui.js';
 
 export function initSettings() {
   if (!state.browserAPI) return;
+  const K = (globalThis.LexoraStorage && LexoraStorage.KEYS) || {
+    CURRENT_LESSON: 'currentLesson',
+    CONFIG: 'lexoraConfig',
+    STATS: 'lexoraStats',
+    AUTO_PLAY_SELECTED_TEXT: 'autoPlaySelectedText',
+  };
 
-  state.browserAPI.storage.local.get(['currentLesson', 'lexoraConfig', 'lexoraStats', 'autoPlaySelectedText'], res => {
-    if (res.currentLesson) {
-      state.currentLesson = res.currentLesson;
+  function safeUrlToOriginPattern(url) {
+    try {
+      const u = new URL(url);
+      if (u.protocol !== 'http:' && u.protocol !== 'https:') return null;
+      return `${u.protocol}//${u.host}/*`;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function isLocalEndpoint(url) {
+    try {
+      const u = new URL(url);
+      return (
+        u.hostname === '127.0.0.1' ||
+        u.hostname === 'localhost' ||
+        u.hostname === '::1'
+      );
+    } catch (_) {
+      return true;
+    }
+  }
+
+  async function ensureOptionalPermissionsForConfig(nextConfig) {
+    const api = state.browserAPI;
+    if (!api.permissions || typeof api.permissions.request !== 'function') return true;
+
+    async function activeTabOriginPattern() {
+      if (!api.tabs || typeof api.tabs.query !== 'function') return null;
+      try {
+        const tabs = await api.tabs.query({ active: true, currentWindow: true });
+        const url = tabs && tabs[0] && tabs[0].url ? tabs[0].url : '';
+        return safeUrlToOriginPattern(url);
+      } catch (_) {
+        return null;
+      }
+    }
+
+    // Auto-capture needs webNavigation + host permission for the *current origin*.
+    // We intentionally avoid requesting `<all_urls>` as part of enabling this feature.
+    if (nextConfig?.autoCapture) {
+      const originPat = await activeTabOriginPattern();
+      if (!originPat) return false;
+      try {
+        const ok = await api.permissions.request({
+          permissions: ['webNavigation'],
+          origins: [originPat],
+        });
+        if (!ok) return false;
+      } catch (_) {
+        return false;
+      }
+    }
+
+    // Remote endpoint access may require host permissions (localhost doesn't).
+    if (nextConfig?.url && !isLocalEndpoint(nextConfig.url)) {
+      const pat = safeUrlToOriginPattern(nextConfig.url);
+      // Do not escalate to `<all_urls>` on parse failures. Require a valid http(s) URL.
+      if (!pat) return false;
+      const origins = [pat];
+      try {
+        const ok = await api.permissions.request({ origins });
+        if (!ok) return false;
+      } catch (_) {
+        return false;
+      }
+    }
+
+    return true;
+  }
+
+  state.browserAPI.storage.local.get([K.CURRENT_LESSON, K.CONFIG, K.STATS, K.AUTO_PLAY_SELECTED_TEXT], res => {
+    if (res[K.CURRENT_LESSON]) {
+      state.currentLesson = res[K.CURRENT_LESSON];
       applyLesson(state.currentLesson);
     }
-    if (res.lexoraConfig) {
+    if (res[K.CONFIG]) {
       // Keep object identity stable (sidepanel.js holds a reference).
-      Object.assign(state.config, res.lexoraConfig);
+      Object.assign(state.config, res[K.CONFIG]);
       // Cloud TTS feature was removed — ensure we don't keep stale secrets.
       delete state.config.ttsKey;
       delete state.config.aiCleanupOnCapture;
@@ -34,8 +111,8 @@ export function initSettings() {
     }
     
     // Load stats
-    if (res.lexoraStats?.allTime) {
-      state.stats.allTime = { ...state.stats.allTime, ...res.lexoraStats.allTime };
+    if (res[K.STATS]?.allTime) {
+      state.stats.allTime = { ...state.stats.allTime, ...res[K.STATS].allTime };
     }
     updateStatsUI();
 
@@ -45,9 +122,9 @@ export function initSettings() {
     if (window.lexoraAudio) window.lexoraAudio.updateKokoroDtypeRowVisibility();
     if (window.lexoraAudio) window.lexoraAudio.initVoice();
 
-    if (res.autoPlaySelectedText && state.currentLesson && state.currentLesson.title === 'Selected Text') {
+    if (res[K.AUTO_PLAY_SELECTED_TEXT] && state.currentLesson && state.currentLesson.title === 'Selected Text') {
       // Clear the one-shot flag.
-      state.browserAPI.storage.local.set({ autoPlaySelectedText: false });
+      state.browserAPI.storage.local.set({ [K.AUTO_PLAY_SELECTED_TEXT]: false });
 
       // Switch to Audio tab and start playback.
       const audioTab = document.querySelector('.tab[data-tab="audio"]');
@@ -62,18 +139,18 @@ export function initSettings() {
   // Listen for the one-shot flag + lesson update and auto-start playback.
   state.browserAPI.storage.onChanged.addListener((changes, areaName) => {
     if (areaName !== 'local') return;
-    if (changes.lexoraStats?.newValue?.allTime) {
-      state.stats.allTime = { ...state.stats.allTime, ...changes.lexoraStats.newValue.allTime };
+    if (changes[K.STATS]?.newValue?.allTime) {
+      state.stats.allTime = { ...state.stats.allTime, ...changes[K.STATS].newValue.allTime };
       updateStatsUI();
     }
-    const nextFlag = changes.autoPlaySelectedText?.newValue;
-    const nextLesson = changes.currentLesson?.newValue;
+    const nextFlag = changes[K.AUTO_PLAY_SELECTED_TEXT]?.newValue;
+    const nextLesson = changes[K.CURRENT_LESSON]?.newValue;
     if (!nextFlag) return;
     if (!nextLesson || nextLesson.title !== 'Selected Text' || !nextLesson.content) return;
 
     state.currentLesson = nextLesson;
     applyLesson(state.currentLesson);
-    state.browserAPI.storage.local.set({ autoPlaySelectedText: false });
+    state.browserAPI.storage.local.set({ [K.AUTO_PLAY_SELECTED_TEXT]: false });
 
     const audioTab = document.querySelector('.tab[data-tab="audio"]');
     if (audioTab) audioTab.click();
@@ -96,13 +173,24 @@ export function initSettings() {
         document.body.classList.remove('theme-light');
       }
       
-      state.browserAPI.storage.local.set({ lexoraConfig: state.config }, () => {
-        if (dom.settingsStatus) {
-          dom.settingsStatus.textContent = '✅ Config Saved';
-          if (window.lexoraAudio) window.lexoraAudio.initVoice();
-          setTimeout(() => { dom.settingsStatus.textContent = ''; }, 2000);
+      (async () => {
+        const ok = await ensureOptionalPermissionsForConfig(state.config);
+        if (!ok) {
+          // Keep config saved locally even if optional perms were denied; features will degrade gracefully.
+          if (dom.settingsStatus) {
+            dom.settingsStatus.textContent = '⚠️ Saved, but optional permissions were denied.';
+            setTimeout(() => { dom.settingsStatus.textContent = ''; }, 3500);
+          }
         }
-      });
+
+        state.browserAPI.storage.local.set({ lexoraConfig: state.config }, () => {
+          if (dom.settingsStatus) {
+            dom.settingsStatus.textContent = ok ? '✅ Config Saved' : '✅ Config Saved (limited)';
+            if (window.lexoraAudio) window.lexoraAudio.initVoice();
+            setTimeout(() => { dom.settingsStatus.textContent = ''; }, 2000);
+          }
+        });
+      })();
     });
   }
 

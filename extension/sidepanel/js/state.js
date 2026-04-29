@@ -1,4 +1,6 @@
 // ── Global Shared State ───────────────────────────────────────────────────
+import '../../protocol.js';
+import '../../storage.js';
 
 export const state = {
   currentLesson: null,
