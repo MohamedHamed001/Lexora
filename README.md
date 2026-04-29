@@ -49,13 +49,27 @@ The extension was born from a simple personal need: I lose focus when I only rea
 
 ## What's New
 
-### v1.6.0
+### v1.7.0
 
 - **Stability**: Fixed capture flow issues that could leave the UI stuck on “Scanning…”.
 - **Selected text → Read**: “Read” from the page selection bar now captures the selection into a “Selected Text” lesson and **auto-starts audio**.
 - **Highlight accuracy**: More robust word alignment + recovery, plus an anchor so highlighting starts near the selected text.
 - **Theme persistence + light mode contrast**: Settings persist correctly and light mode has improved readability for dropdowns and chat bubbles.
 - **Refactor**: Sidepanel logic split into `sidepanel/js/*` modules (UI, settings, export, chat, utils) for maintainability.
+- **Security hardening**:
+  - Proxy fetch now **fail-closed** (extension-only senders, allowlisted origin, POST-only, capped body).
+  - `postMessage` now uses **origin checks + handshake token** for mini-player bridge communications.
+  - Auto-capture now requests **per-origin optional permissions** (no `<all_urls>` escalation).
+- **Supply-chain integrity**: Piper remote models now include **pinned SHA-256** verification for both downloaded and cached assets.
+- **Tests**: Added Vitest unit tests for capture cleanup + protocol/storage contracts, plus a Playwright extension smoke test.
+- **Firefox compatibility path**:
+  - Added `manifest.firefox.json` + `npm run build:firefox` to generate `dist/extension-firefox/manifest.json`.
+  - Firefox background scripts now explicitly load `protocol.js`, `storage.js`, and `capture-clean.js` before `background.js`.
+- **UI polish**:
+  - Fixed mini-player play/pause bridge message-origin handling.
+  - Fixed select/option visibility for model + voice dropdowns (especially in dark mode/macOS).
+  - Fixed Content toolbar layout (`Summarize` button sizing + collapsed search field square).
+  - Reduced capture-ready badge flicker by avoiding redundant status repaints while probing.
 
 ---
 
@@ -95,7 +109,8 @@ The extension was born from a simple personal need: I lose focus when I only rea
 ```
 Lexora/
 ├── extension/                    # Browser extension (core product)
-│   ├── manifest.json             # Manifest V3 config (Chrome + Firefox)
+│   ├── manifest.json             # Manifest V3 config (Chrome)
+│   ├── manifest.firefox.json     # Firefox fallback manifest source (uses background.scripts)
 │   ├── background.js             # Service worker: capture orchestration, message relay, API proxy
 │   ├── content.js                # Content script: overlay injection, word highlighting, drag logic
 │   ├── capture-clean.js          # Deterministic text cleanup (no AI): dedup, boilerplate removal
@@ -119,6 +134,7 @@ Lexora/
 │       ├── piper-worker.js       # Web Worker for Piper TTS (ONNX Runtime + on-demand model download)
 │       ├── piper_phonemize.*     # Piper phonemize WASM module + data
 │       └── ort*.wasm / ort*.js   # ONNX Runtime Web binaries (SIMD)
+├── dist/                         # Generated build outputs (e.g. extension-firefox/)
 ├── server/                       # Reserved for future backend
 ├── BUGS.md                       # Detailed bug tracker with root-cause analyses
 └── .gitignore
@@ -163,13 +179,23 @@ Lexora/
 
 ### Firefox Installation
 
-1. Open Firefox and navigate to `about:debugging#/runtime/this-firefox`.
+1. Build the Firefox-ready folder (Firefox expects the filename `manifest.json`):
+   ```bash
+   npm run build:firefox
+   ```
 
-2. Click **Load Temporary Add-on**.
+2. Open Firefox and navigate to `about:debugging#/runtime/this-firefox`.
 
-3. Select `extension/manifest.json`.
+3. Click **Load Temporary Add-on** and select:
+   - `dist/extension-firefox/manifest.json`
 
 4. The sidebar panel will be available via the sidebar menu, or click the extension icon.
+
+### Stable Firefox Release
+
+If you only want the stable published build (no local setup), install from AMO:
+
+- [Lexora: Webpage TTS on Firefox Add-ons](https://addons.mozilla.org/en-GB/firefox/addon/lexora-webpage-tts/)
 
 ---
 
@@ -218,6 +244,23 @@ Lexora/
 
 Settings are persisted via `chrome.storage.local` and survive browser restarts.
 
+### Permissions model (important)
+
+Lexora is designed around **least privilege**:
+
+- **Default permissions**: `activeTab`, `scripting`, `storage`, `tabs`.
+- **Optional permissions**:
+  - `webNavigation` (for auto-capture / cross-frame highlight relay improvements when granted)
+  - `permissions` (to request optional permissions at runtime)
+- **Optional host permissions**: `http://*/*`, `https://*/*` (requested **per-origin** when needed).
+
+When you enable **Auto-capture**, Lexora requests:
+
+- `webNavigation`
+- a **single origin pattern** derived from the current active tab (e.g. `https://example.com/*`)
+
+If Lexora cannot derive a safe origin pattern, the request **fails closed** (auto-capture won’t enable).
+
 ### Engine Selection
 
 Switch between **Kokoro** and **Piper** in the Audio tab's engine dropdown. The choice is saved to configuration.
@@ -230,6 +273,15 @@ Switch between **Kokoro** and **Piper** in the Audio tab's engine dropdown. The 
 ### Content Security Policy
 
 The extension requires `'wasm-unsafe-eval'` for ONNX Runtime WASM execution. This is scoped to extension pages only and does not affect the host page.
+
+### Chat proxy behavior
+
+Chat requests are made from the sidepanel to the service worker using `proxyFetch`:
+
+- The service worker **only** forwards requests to the configured endpoint origin (or localhost fallback).
+- Only **POST** is allowed.
+- Only a small allowlist of headers is forwarded.
+- On failure, the proxy returns **HTTP metadata** (status code, content-type, capped text snippet) to make debugging easier without exposing sensitive response bodies.
 
 ---
 
@@ -265,6 +317,7 @@ The extension requires `'wasm-unsafe-eval'` for ONNX Runtime WASM execution. Thi
 - **Prefetch pipeline**: Kokoro uses 1 main + 1 prefetch worker, caching up to 20 sentences ahead for gapless playback.
 - **Cross-frame highlighting**: `background.js` relays highlight messages to every frame via `webNavigation.getAllFrames`, enabling highlighting inside iframes (e.g., Udacity lessons).
 - **Deterministic cleanup**: Captured content is cleaned without AI to avoid truncation issues from local LLMs. Cleanup includes Unicode normalization, boilerplate pattern matching, and deduplication.
+- **Progress storage**: Reading progress is stored using **hashed URL keys** plus a bounded `lexoraProgressIndex` (LRU-style) so it scales without huge keys.
 
 ---
 
@@ -289,6 +342,32 @@ Contributions are welcome! Here's how to get started:
 - All TTS processing must remain local. Do not add cloud TTS services.
 - Test capture on diverse sites (Medium, Udacity, MDN, Wikipedia) before submitting.
 - Update `BUGS.md` if you fix or discover a bug.
+- If you change permissions/background behavior, keep both `manifest.json` (Chrome) and `manifest.firefox.json` (Firefox fallback) in sync.
+
+---
+
+## Maintenance & Quality
+
+### Bug tracking
+
+Use `BUGS.md` as the lightweight bug log. Each entry should include:
+
+- Steps to reproduce
+- Expected vs actual
+- Root cause
+- Fix (with file/line references)
+- Regression test (unit/e2e), or rationale if not feasible
+
+
+### Tests
+
+- **Unit tests**: `npm test` (Vitest) covers:
+  - deterministic capture cleanup
+  - protocol/storage contracts
+  - DOM-safe markdown rendering helpers
+- **E2E**: `npm run test:e2e` runs a Playwright **extension smoke test**.
+
+Note: two “real flow” Playwright tests exist (`extension/e2e/lexora-flows.spec.js`) but are currently marked `test.skip` due to MV3 service worker + focus/timing flakiness in this environment.
 
 ---
 

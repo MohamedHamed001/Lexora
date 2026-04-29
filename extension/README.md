@@ -49,7 +49,7 @@ The extension was born from a simple personal need: I lose focus when I only rea
 
 ## What's New
 
-### v1.6.0
+### v1.7.0
 
 - **Stability**: Fixed capture flow issues that could leave the UI stuck on “Scanning…”.
 - **Selected text → Read**: “Read” from the page selection bar now captures the selection into a “Selected Text” lesson and **auto-starts audio**.

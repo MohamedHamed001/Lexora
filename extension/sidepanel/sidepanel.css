@@ -54,6 +54,21 @@ body.theme-light .user-bubble {
   background: rgba(109, 40, 217, 0.14);
 }
 
+/* Select / option readability (macOS in particular can render option menus with light bg) */
+select {
+  color: var(--text-color);
+}
+option,
+optgroup {
+  color: var(--text-color);
+  background: var(--surface-highest);
+}
+body.theme-light option,
+body.theme-light optgroup {
+  color: var(--text-color);
+  background: var(--surface-high);
+}
+
 /* Audio transport buttons should remain high-contrast */
 body.theme-light .audio-controls .action-btn {
   color: #fff;
@@ -143,6 +158,25 @@ body {
   border-top: 1px solid var(--outline-variant);
   width: 100%;
   flex-shrink: 0;
+}
+
+/* Content toolbar (search + summarize) */
+.content-toolbar {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.content-toolbar .chat-input {
+  flex: 1 1 auto;
+  min-width: 140px;
+}
+/* Override global .action-btn { width: 100% } inside toolbars */
+.content-toolbar .action-btn {
+  width: auto;
+  flex: 0 0 auto;
+  padding: 10px 14px;
+  border-radius: 12px;
+  white-space: nowrap;
 }
 
 .chat-input {
@@ -430,7 +464,7 @@ body {
 .user-bubble {
   align-self: flex-end;
   background: rgba(109, 40, 217, 0.28);
-  color: #e8e0ff;
+  color: var(--text-color);
   padding: 10px 14px;
   border-radius: 14px 14px 4px 14px;
   font-size: 0.88rem;
@@ -443,7 +477,7 @@ body {
   align-self: flex-start;
   background: rgba(255, 255, 255, 0.05);
   border-left: 3px solid var(--primary-glow);
-  color: #ddd8f0;
+  color: var(--text-color);
   padding: 10px 14px;
   border-radius: 4px 14px 14px 14px;
   font-size: 0.88rem;
@@ -480,11 +514,26 @@ body {
   line-height: 1.55;
 }
 .md-code {
-  background: rgba(255,255,255,0.1);
+  background: rgba(255, 255, 255, 0.14);
+  color: var(--text-color);
   padding: 1px 5px;
   border-radius: 4px;
   font-size: 0.82em;
   font-family: 'Menlo', 'Courier New', monospace;
+}
+
+/* Dark-mode readability helpers */
+.chat-input::placeholder,
+input::placeholder,
+textarea::placeholder {
+  color: rgba(173, 169, 182, 0.82);
+}
+
+a {
+  color: var(--primary-glow);
+}
+a:hover {
+  text-decoration: underline;
 }
 
 /* Model Download Progress */
@@ -522,7 +571,7 @@ body {
   padding-top: 4px;
 }
 #voice-picker option {
-  color: white;
+  color: var(--text-color);
   background: var(--surface-highest);
   font-weight: 400;
   padding: 4px 8px;

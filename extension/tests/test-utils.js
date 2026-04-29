@@ -6,7 +6,7 @@ function runTests() {
 
   // Test splitIntoChunks
   const sampleText = "Hello world. This is a test. How are you today? I am fine!";
-  const chunks = splitIntoChunks(sampleText, { maxLen: 20 });
+  const chunks = splitIntoChunks(sampleText, 20);
   
   assert.ok(chunks.length > 0, 'Should split text into chunks');
   assert.equal(chunks[0], 'Hello world.');

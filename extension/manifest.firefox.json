@@ -3,16 +3,11 @@
   "name": "Lexora",
   "version": "1.7.0",
   "description": "AI-powered study companion for any page.",
-  "permissions": [
-    "activeTab",
-    "scripting",
-    "storage",
-    "tabs"
-  ],
-  "optional_permissions": ["permissions", "webNavigation"],
+  "permissions": ["activeTab", "scripting", "storage", "tabs"],
+  "optional_permissions": ["webNavigation"],
   "optional_host_permissions": ["http://*/*", "https://*/*"],
   "background": {
-    "service_worker": "background.js"
+    "scripts": ["protocol.js", "storage.js", "capture-clean.js", "background.js"]
   },
   "action": {
     "default_title": "AI-Study Companion",
@@ -30,9 +25,7 @@
   },
   "web_accessible_resources": [
     {
-      "resources": [
-        "sidepanel/sidepanel.html"
-      ],
+      "resources": ["sidepanel/sidepanel.html"],
       "matches": ["http://*/*", "https://*/*"]
     }
   ],
@@ -51,3 +44,4 @@
     "default_icon": "icons/icon48.png"
   }
 }
+

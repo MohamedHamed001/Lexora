@@ -1,6 +1,8 @@
 import { state } from './state.js';
 import { dom } from './dom.js';
-import { mdToHtml } from './utils.js';
+import { mdToDomFragment } from './utils.js';
+
+const A = (globalThis.LexoraProtocol && LexoraProtocol.ACTIONS) || null;
 
 export function addBubble(role, text) {
   const box = dom.chatMessages;
@@ -27,7 +29,7 @@ export function submitQuery(q, isHidden = false) {
 
   const thinking = addBubble('ai', '…');
   state.browserAPI.runtime.sendMessage({
-    action: 'proxyFetch',
+    action: A ? A.PROXY_FETCH : 'proxyFetch',
     url:    state.config.url,
     method: 'POST',
     headers: headers,
@@ -42,16 +44,18 @@ export function submitQuery(q, isHidden = false) {
   }, resp => {
     if (resp?.success) {
       const reply = resp.data.choices[0].message.content;
-      thinking.innerHTML = mdToHtml(reply);
+      thinking.replaceChildren(mdToDomFragment(reply));
       // Append assistant reply to history (keep last 20 turns to avoid token bloat)
       state.chatHistory.push({ role: 'assistant', content: reply });
       if (state.chatHistory.length > 40) state.chatHistory.splice(0, 2);
     } else {
       const errDetail = resp?.error || 'Could not reach API.';
-      thinking.innerHTML = mdToHtml(
-        `❌ **Chat error:** ${errDetail}\n\n` +
-        `> Make sure your LLM endpoint is running (e.g. [LM Studio](http://lmstudio.ai) or [Ollama](https://ollama.com)) ` +
-        `and the **Endpoint URL** in Settings matches your server.`
+      thinking.replaceChildren(
+        mdToDomFragment(
+          `❌ **Chat error:** ${errDetail}\n\n` +
+            `> Make sure your LLM endpoint is running (e.g. LM Studio or Ollama) ` +
+            `and the **Endpoint URL** in Settings matches your server.`
+        )
       );
       // Don't push failed turn into history
       state.chatHistory.pop();
