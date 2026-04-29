@@ -574,7 +574,6 @@ function findGoogleVoice() {
 }
 
 const PIPER_BUNDLED_PREFIX = 'piper|'; // e.g. 'piper|amy', 'piper|hfc_female'
-const PIPER_VOICE_PREFIX  = 'piper|amy'; // kept for back-compat checks
 const GOOGLE_VOICE_PREFIX  = 'sys|';
 
 /**
@@ -639,6 +638,28 @@ function populateVoicePicker(availableVoiceIds) {
 
     // Default to Google Female EN
     hfcFemale.selected = true;
+
+    const systemVoices = synth.getVoices()
+      .filter((v) => /^en/i.test(v.lang || '') && !isLikelyNoveltyOrEffectVoice(v))
+      .slice(0, 6);
+    const preferredSystemVoice = findGoogleVoice();
+    const uniqueSystemVoices = [];
+    for (const v of [preferredSystemVoice, ...systemVoices]) {
+      if (!v) continue;
+      if (uniqueSystemVoices.some((x) => x.voiceURI === v.voiceURI)) continue;
+      uniqueSystemVoices.push(v);
+    }
+    if (uniqueSystemVoices.length) {
+      const systemGroup = document.createElement('optgroup');
+      systemGroup.label = 'System fallback';
+      for (const v of uniqueSystemVoices) {
+        const opt = document.createElement('option');
+        opt.value = `${GOOGLE_VOICE_PREFIX}${encodeURIComponent(v.voiceURI || v.name)}`;
+        opt.textContent = `${v.name}${v.lang ? ` (${v.lang})` : ''}`;
+        systemGroup.appendChild(opt);
+      }
+      voicePicker.appendChild(systemGroup);
+    }
     return;
   }
 
@@ -957,7 +978,7 @@ function synthesizeAll(voiceId, fromIdx = 0) {
   }
 }
 
-function playFromBlob(blob, sampleRate, voiceId) {
+function playFromBlob(blob, sampleRate, _voiceId) {
   sysUtteranceHighlight = false;
   const url = URL.createObjectURL(blob);
   currentAudioElement = new Audio(url);
@@ -1081,8 +1102,6 @@ function handleKokoroWorkerMessage(e) {
 let needsResynthOnResume = false;
 
 voicePicker.addEventListener('change', () => {
-  const val = voicePicker.value;
-
   const wasSpeaking = speaking;
   const wasPaused = isPaused;
   cancelAudio(true);
@@ -1416,4 +1435,3 @@ window.lexoraAudio = {
   advanceSentence,
   startPlayback
 };
-

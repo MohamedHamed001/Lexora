@@ -7,7 +7,7 @@
   "optional_permissions": ["webNavigation"],
   "optional_host_permissions": ["http://*/*", "https://*/*"],
   "background": {
-    "scripts": ["protocol.js", "storage.js", "capture-clean.js", "background.js"]
+    "scripts": ["protocol.js", "storage.js", "capture-extractor.js", "capture-clean.js", "background.js"]
   },
   "action": {
     "default_title": "AI-Study Companion",
@@ -44,4 +44,3 @@
     "default_icon": "icons/icon48.png"
   }
 }
-

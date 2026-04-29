@@ -14,6 +14,11 @@ export function addBubble(role, text) {
   return el;
 }
 
+function extractChatReply(data) {
+  const reply = data?.choices?.[0]?.message?.content;
+  return typeof reply === 'string' && reply.trim() ? reply : null;
+}
+
 export function submitQuery(q, isHidden = false) {
   if (!isHidden) {
     addBubble('user', q);
@@ -43,7 +48,13 @@ export function submitQuery(q, isHidden = false) {
     },
   }, resp => {
     if (resp?.success) {
-      const reply = resp.data.choices[0].message.content;
+      const reply = extractChatReply(resp.data);
+      if (!reply) {
+        thinking.textContent = 'Chat error: endpoint returned an unsupported response shape.';
+        state.chatHistory.pop();
+        dom.contentContainer.scrollTop = 99999;
+        return;
+      }
       thinking.replaceChildren(mdToDomFragment(reply));
       // Append assistant reply to history (keep last 20 turns to avoid token bloat)
       state.chatHistory.push({ role: 'assistant', content: reply });

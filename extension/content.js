@@ -892,51 +892,7 @@
 
   // ── Auto Capture Expose ──────────────────────────────────────────────────
   window.lexoraCaptureText = function() {
-    const p = location.protocol;
-    if (
-      p === 'chrome-extension:' ||
-      p === 'moz-extension:' ||
-      p === 'webkit-extension:' ||
-      p === 'chrome-search:'
-    ) {
-      return null;
-    }
-
-    const selectors = [
-      'article', 'main', '[role="main"]',
-      'section > p', 'section > h1', 'section > h2', 'section > h3', 'section > h4',
-      'h1','h2','h3','h4',
-      'p', 'li',
-      'blockquote',
-      'pre', 'code',
-    ];
-    const allEls = Array.from(document.querySelectorAll(selectors.join(',')));
-    const leafEls = allEls.filter((el) =>
-      !allEls.some((other) => other !== el && el.contains(other))
-    );
-
-    const blocks = [];
-    const seen = new Set();
-    leafEls.forEach((el) => {
-      if (el.closest('nav,button,header,footer,[role="navigation"]')) return;
-      const isVisible = !!el.offsetParent;
-      const txt = (isVisible ? el.innerText : el.textContent)
-        .replace(/\s+/g, ' ')
-        .trim();
-      if (txt.length > 10 && !seen.has(txt)) {
-        seen.add(txt);
-        blocks.push({ tag: el.tagName, text: txt });
-      }
-    });
-    if (!blocks.length) return null;
-    const formatted = blocks.map(b =>
-      /^H\d$/.test(b.tag) ? `\n## ${b.text}\n` : b.text
-    ).join('\n\n');
-    return {
-      title:   document.title.split(' - ')[0] || document.title || 'Captured Page',
-      content: formatted.trim(),
-      url:     location.href,
-    };
+    return globalThis.LexoraCaptureExtractor?.extractPageContent(document, location) || null;
   };
 
 })();

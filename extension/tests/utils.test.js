@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest';
-import { splitIntoChunks, mdToDomFragment } from '../sidepanel/js/utils.js';
+import { splitIntoChunks, mdToDomFragment, markMatches } from '../sidepanel/js/utils.js';
 
 describe('splitIntoChunks', () => {
   test('splits basic sentences', () => {
@@ -23,3 +23,14 @@ describe('mdToDomFragment', () => {
   });
 });
 
+describe('markMatches', () => {
+  test('marks every match inside a text node', () => {
+    const host = document.createElement('div');
+    host.textContent = 'repeat once, repeat twice, repeat three times';
+
+    markMatches(host, 'repeat');
+
+    expect(host.querySelectorAll('mark')).toHaveLength(3);
+    expect(host.textContent).toBe('repeat once, repeat twice, repeat three times');
+  });
+});

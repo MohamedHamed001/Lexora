@@ -4,7 +4,7 @@
   "type": "module",
   "scripts": {
     "build:firefox": "node scripts/build-firefox.mjs",
-    "lint": "eslint . --max-warnings 9999",
+    "lint": "eslint . --max-warnings 0",
     "format": "prettier -w .",
     "test": "vitest run --environment jsdom extension/tests",
     "test:e2e": "playwright test"

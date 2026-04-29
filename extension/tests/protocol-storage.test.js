@@ -19,6 +19,11 @@ describe('protocol.js', () => {
     expect(P.isKnownAction('not-a-real-action')).toBe(false);
     expect(P.getAction({ action: 'probeCapturable' })).toBe('probeCapturable');
     expect(P.getAction({})).toBe(null);
+    expect(P.isTextSelectionRequest({ action: 'captureText', text: 'hello' })).toBe(true);
+    expect(P.isTextSelectionRequest({ action: 'captureText', text: '   ' })).toBe(false);
+    expect(P.isHighlightWordRequest({ action: 'highlightWord', chunkText: 'hello', wordIndex: 0 })).toBe(true);
+    expect(P.isHighlightWordRequest({ action: 'highlightWord', chunkText: 'hello', wordIndex: -1 })).toBe(false);
+    expect(P.isProxyFetchRequest({ action: 'proxyFetch', url: 'http://127.0.0.1', method: 'POST' })).toBe(true);
   });
 });
 
@@ -38,4 +43,3 @@ describe('storage.js', () => {
     expect(S.progressKeyForUrl(null).startsWith('progress_')).toBe(true);
   });
 });
-

@@ -1,44 +1,3 @@
-// ── Simple Markdown Parsing ────────────────────────────────────────────────
-
-export function mdToHtml(md) {
-  const lines = (md || '').split('\n');
-  let html = '', inList = false;
-
-  lines.forEach(raw => {
-    const line = raw.trimEnd();
-    if (/^#{2,}\s+/.test(line)) {
-      if (inList) { html += '</ul>'; inList = false; }
-      html += `<h3 class="md-h3">${inlineMd(escHtml(line.replace(/^#{2,}\s+/, '')))}</h3>`;
-    } else if (/^#\s+/.test(line)) {
-      if (inList) { html += '</ul>'; inList = false; }
-      html += `<h2 class="md-h2">${inlineMd(escHtml(line.replace(/^#\s+/, '')))}</h2>`;
-    } else if (/^[-*]\s+/.test(line)) {
-      if (!inList) { html += '<ul class="md-ul">'; inList = true; }
-      html += `<li>${inlineMd(escHtml(line.replace(/^[-*]\s+/, '')))}</li>`;
-    } else if (line.trim() === '') {
-      if (inList) { html += '</ul>'; inList = false; }
-      html += '<div style="height:0.4em"></div>';
-    } else {
-      if (inList) { html += '</ul>'; inList = false; }
-      html += `<p class="md-p">${inlineMd(escHtml(line))}</p>`;
-    }
-  });
-
-  if (inList) html += '</ul>';
-  return html;
-}
-
-export function inlineMd(s) {
-  return s
-    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
-    .replace(/\*(.+?)\*/g,     '<em>$1</em>')
-    .replace(/`(.+?)`/g,       '<code class="md-code">$1</code>');
-}
-
-export function escHtml(s) {
-  return (s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-}
-
 // ── Safe DOM rendering (no innerHTML) ───────────────────────────────────────
 
 function renderInlineMdTo(parent, text) {
@@ -162,16 +121,22 @@ export function markMatches(root, term) {
     const idx = lower.indexOf(query);
     if (idx < 0) continue;
 
-    const before = text.slice(0, idx);
-    const match = text.slice(idx, idx + q.length);
-    const after = text.slice(idx + q.length);
-
     const frag = document.createDocumentFragment();
-    if (before) frag.appendChild(document.createTextNode(before));
-    const mark = document.createElement('mark');
-    mark.textContent = match;
-    frag.appendChild(mark);
-    if (after) frag.appendChild(document.createTextNode(after));
+    let pos = 0;
+    let matchIdx = idx;
+    while (matchIdx >= 0) {
+      if (matchIdx > pos) {
+        frag.appendChild(document.createTextNode(text.slice(pos, matchIdx)));
+      }
+      const mark = document.createElement('mark');
+      mark.textContent = text.slice(matchIdx, matchIdx + q.length);
+      frag.appendChild(mark);
+      pos = matchIdx + q.length;
+      matchIdx = lower.indexOf(query, pos);
+    }
+    if (pos < text.length) {
+      frag.appendChild(document.createTextNode(text.slice(pos)));
+    }
 
     node.parentNode.replaceChild(frag, node);
   }
