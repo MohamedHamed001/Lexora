@@ -1,5 +1,7 @@
 import { debugLog } from './messaging.js';
 
+const _legacyMigrateLocks = new Set();
+
 export async function loadReadingProgressForLesson(browserAPI, lesson) {
   if (!browserAPI?.storage?.local?.get) return null;
   if (!lesson?.url || lesson?.title === 'Selected Text') return null;
@@ -35,11 +37,16 @@ export async function loadReadingProgressForLesson(browserAPI, lesson) {
   // One-way migrate legacy keys if needed. Best effort; if it fails we keep
   // both keys and try again next read.
   if (legacyKey && res[progressKey] === undefined && res[legacyKey] !== undefined) {
+    if (_legacyMigrateLocks.has(progressKey)) return v;
+    _legacyMigrateLocks.add(progressKey);
     try {
       browserAPI.storage.local.set({ [progressKey]: v }, () => {
-        browserAPI.storage.local.remove([legacyKey], () => {});
+        browserAPI.storage.local.remove([legacyKey], () => {
+          _legacyMigrateLocks.delete(progressKey);
+        });
       });
     } catch (err) {
+      _legacyMigrateLocks.delete(progressKey);
       debugLog('Progress', 'legacy progress migration failed', err);
     }
   }

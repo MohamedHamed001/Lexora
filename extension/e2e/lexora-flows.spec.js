@@ -1,8 +1,9 @@
-import { test, expect, chromium } from '@playwright/test';
+import { test, expect } from '@playwright/test';
 import path from 'node:path';
 import os from 'node:os';
 import fs from 'node:fs/promises';
 import http from 'node:http';
+import { launchChromiumWithExtension } from './chromium-extension-context.js';
 
 function extensionPath() {
   return path.join(process.cwd(), 'extension');
@@ -27,6 +28,12 @@ async function buildE2eExtensionDir() {
 }
 
 async function startFixtureServer() {
+  // Must exceed LexoraCaptureExtractor.LIMITS.HTML_READY_CHARS (800) so extractPageContent is non-null.
+  const fillerParagraphs = Array.from(
+    { length: 12 },
+    (_, i) =>
+      `<p>Fixture paragraph ${i} adds readable text so deep capture crosses the HTML readiness threshold without external network access.</p>`
+  ).join('\n');
   const articleHtml = `
     <!doctype html>
     <html>
@@ -37,7 +44,7 @@ async function startFixtureServer() {
             <h1>Lexora Fixture Lesson</h1>
             <p>Example Domain selected reading content appears here for the selection workflow.</p>
             <p>This deterministic article has enough readable text for deep capture to extract a useful lesson.</p>
-            <p>Another paragraph gives the extractor enough signal without depending on external network access.</p>
+            ${fillerParagraphs}
           </article>
         </main>
       </body>
@@ -63,16 +70,11 @@ async function startFixtureServer() {
 }
 
 async function launchExtensionContext(extDir) {
-  return chromium.launchPersistentContext('', {
-    args: [
-      `--disable-extensions-except=${extDir}`,
-      `--load-extension=${extDir}`,
-    ],
-  });
+  return launchChromiumWithExtension(extDir);
 }
 
 async function getExtensionOrigin(context) {
-  const deadline = Date.now() + 15_000;
+  const deadline = Date.now() + (process.env.CI ? 45_000 : 15_000);
   while (Date.now() < deadline) {
     const sw = context.serviceWorkers().find((worker) => worker.url().startsWith('chrome-extension://'));
     if (sw) {
@@ -123,7 +125,10 @@ test('deep capture updates sidepanel lesson title', async () => {
     }, tabId);
 
     expect(resp.error).toBe('');
-    expect(resp.response?.success).toBeTruthy();
+    expect(
+      resp.response?.success,
+      `deep capture failed: ${resp.response?.error || JSON.stringify(resp.response)}`
+    ).toBeTruthy();
     expect(resp.response?.data?.content).toContain('deterministic article');
     await expect(sidepanel.locator('#lesson-title')).toHaveText('Lexora Fixture Lesson', { timeout: 20_000 });
   } finally {

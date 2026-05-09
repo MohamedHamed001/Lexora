@@ -1,4 +1,6 @@
+import js from "@eslint/js";
 export default [
+  js.configs.recommended,
   {
     ignores: [
       "dist/**",
@@ -14,10 +16,17 @@ export default [
   },
   {
     // Node-context files (tests, tooling, configs)
-    files: ["**/*.config.js", "playwright.config.js", "extension/tests/**/*.js", "extension/e2e/**/*.js"],
+    files: [
+      "**/*.config.js",
+      "playwright.config.js",
+      "scripts/**/*.mjs",
+      "extension/tests/**/*.js",
+      "extension/e2e/**/*.js",
+    ],
     languageOptions: {
       globals: {
         process: "readonly",
+        console: "readonly",
       },
     },
   },
@@ -54,6 +63,9 @@ export default [
         MutationObserver: "readonly",
         LexoraProtocol: "readonly",
         LexoraStorage: "readonly",
+        LexoraProxy: "readonly",
+        LexoraLessonCapture: "readonly",
+        TextDecoder: "readonly",
         cleanCapturedLessonNonAi: "readonly"
       },
     },

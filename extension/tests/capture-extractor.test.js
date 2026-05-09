@@ -13,6 +13,12 @@ async function loadExtractor() {
 }
 
 describe('capture-extractor', () => {
+  test('exports LIMITS aligned with lesson length gate', async () => {
+    const extractor = await loadExtractor();
+    expect(extractor.LIMITS.MIN_LESSON_CONTENT_CHARS).toBe(80);
+    expect(extractor.LIMITS.PROBE_BLOCK_CAP).toBe(250);
+  });
+
   test('extracts readable article content without duplicating parent containers', async () => {
     const extractor = await loadExtractor();
     document.title = 'Test Lesson - Site';

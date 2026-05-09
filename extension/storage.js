@@ -7,6 +7,10 @@
     STATS: 'lexoraStats',
     AUTO_PLAY_SELECTED_TEXT: 'autoPlaySelectedText',
     PROGRESS_INDEX: 'lexoraProgressIndex',
+    /** `{ tabId, frameId }` for targeted highlight relay (optional). */
+    HIGHLIGHT_TARGET: 'lexoraHighlightTarget',
+    /** One-shot `{ text, ts }` when user triggers Ask AI from a tab (side panel picks up). */
+    PENDING_ASK_AI: 'lexoraPendingAskAi',
   });
 
   function fnv1a32(str) {

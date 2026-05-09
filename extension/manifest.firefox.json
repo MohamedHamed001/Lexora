@@ -1,13 +1,13 @@
 {
   "manifest_version": 3,
   "name": "Lexora",
-  "version": "1.8.0",
+  "version": "1.10.0",
   "description": "AI-powered study companion for any page.",
   "permissions": ["activeTab", "scripting", "storage", "tabs"],
   "optional_permissions": ["webNavigation"],
   "optional_host_permissions": ["http://*/*", "https://*/*"],
   "background": {
-    "scripts": ["debug-log.js", "protocol.js", "message-guards.js", "storage.js", "capture-extractor.js", "capture-clean.js", "background.js"]
+    "scripts": ["debug-log.js", "protocol.js", "storage.js", "lexora-constants.js", "message-guards.js", "proxy.js", "lesson-capture.js", "capture-extractor.js", "capture-clean.js", "background.js"]
   },
   "action": {
     "default_title": "AI-Study Companion",

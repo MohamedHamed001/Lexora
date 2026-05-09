@@ -6,8 +6,11 @@
 if (typeof importScripts === 'function') {
   importScripts('debug-log.js');
   importScripts('protocol.js');
-  importScripts('message-guards.js');
   importScripts('storage.js');
+  importScripts('lexora-constants.js');
+  importScripts('message-guards.js');
+  importScripts('proxy.js');
+  importScripts('lesson-capture.js');
   importScripts('capture-extractor.js');
   importScripts('capture-clean.js');
 }
@@ -19,6 +22,18 @@ const browserAPI =
 if (!browserAPI) {
   throw new Error('Extension runtime API not found (chrome.runtime/browser.runtime missing)');
 }
+
+/** Injected into pages (order matters): capture helper, content modules, bootstrap. */
+const LEXORA_PAGE_SCRIPT_FILES = Object.freeze([
+  'lexora-constants.js',
+  'capture-extractor.js',
+  'content/highlighter-alignment.js',
+  'content/content-highlighter.js',
+  'content/content-overlay.js',
+  'content/content-selection-bar.js',
+  'content/content-router.js',
+  'content.js',
+]);
 
 // Pull action constants from the shared protocol module so we never hard-code
 // strings here. Falls back to literal strings only if protocol.js failed to load.
@@ -46,7 +61,13 @@ const EXTENSION_ORIGIN = (() => {
 })();
 
 let _lexoraConfigCache = null;
-const STORAGE_KEYS = (globalThis.LexoraStorage && LexoraStorage.KEYS) || { CONFIG: 'lexoraConfig' };
+const STORAGE_KEYS = (globalThis.LexoraStorage && LexoraStorage.KEYS) || {
+  CONFIG: 'lexoraConfig',
+  HIGHLIGHT_TARGET: 'lexoraHighlightTarget',
+  PENDING_ASK_AI: 'lexoraPendingAskAi',
+};
+const MIN_CAPTURE_CONTENT_CHARS =
+  (globalThis.LexoraConstants && globalThis.LexoraConstants.MIN_CAPTURE_CONTENT_CHARS) || 80;
 browserAPI.storage?.local?.get?.([STORAGE_KEYS.CONFIG], (res) => {
   if (res && res[STORAGE_KEYS.CONFIG]) _lexoraConfigCache = res[STORAGE_KEYS.CONFIG];
 });
@@ -79,129 +100,18 @@ function getConfiguredChatEndpointUrl() {
   }
 }
 
-function isAllowedProxyUrl(u) {
-  // Allow only the configured endpoint origin by default.
-  const configured = getConfiguredChatEndpointUrl();
-  if (configured) {
-    return u.origin === configured.origin;
-  }
-  // Fallback (should be rare): allow localhost only.
-  return u.hostname === '127.0.0.1' || u.hostname === 'localhost';
-}
-
-function pickAllowedHeaders(h) {
-  const out = {};
-  const src = h && typeof h === 'object' ? h : {};
-  // Allowlist only what we need.
-  if (typeof src.Authorization === 'string') out.Authorization = src.Authorization;
-  if (typeof src.authorization === 'string') out.Authorization = src.authorization;
-  if (typeof src.Accept === 'string') out.Accept = src.Accept;
-  if (typeof src.accept === 'string') out.Accept = src.accept;
-  return out;
-}
-
 function handleProxyFetch(request, sender, sendResponse) {
-    if (!globalThis.LexoraProtocol || typeof LexoraProtocol.isProxyFetchRequest !== 'function') {
-      sendResponse({ success: false, error: 'Protocol unavailable.' });
-      return false;
-    }
-    if (!LexoraProtocol.isProxyFetchRequest(request)) {
-      sendResponse({ success: false, error: 'Invalid proxy request.' });
-      return false;
-    }
-    // Only the extension UI should be allowed to use the proxy.
-    if (!isExtensionSender(sender)) {
-      sendResponse({ success: false, error: 'Unauthorized sender.' });
-      return false;
-    }
-
-    // Validate URL + restrict destination.
-    let targetUrl;
-    try {
-      targetUrl = new URL(request.url);
-    } catch (_) {
-      sendResponse({ success: false, error: 'Invalid URL.' });
-      return false;
-    }
-    if (!isAllowedProxyUrl(targetUrl)) {
-      sendResponse({ success: false, error: 'Blocked URL (not in allowlist).' });
-      return false;
-    }
-
-    // Restrict method.
-    const method = (request.method || 'POST').toUpperCase();
-    if (method !== 'POST') {
-      sendResponse({ success: false, error: 'Blocked method.' });
-      return false;
-    }
-
-    // Basic payload cap (avoid huge storage/DoS payloads).
-    const bodyObj = request.body == null ? null : request.body;
-    let bodyJson = undefined;
-    if (bodyObj != null) {
-      try {
-        bodyJson = JSON.stringify(bodyObj);
-      } catch (_) {
-        sendResponse({ success: false, error: 'Invalid JSON body.' });
-        return false;
-      }
-      if (bodyJson.length > 250_000) {
-        sendResponse({ success: false, error: 'Request body too large.' });
-        return false;
-      }
-    }
-
-    const headers = {
-      'Content-Type': 'application/json',
-      ...pickAllowedHeaders(request.headers),
-    };
-
-    fetch(targetUrl.toString(), { method, headers, body: bodyJson })
-      .then(async (r) => {
-        const contentType = r.headers.get('content-type') || '';
-        const text = await r.text();
-
-        let data = null;
-        let jsonOk = false;
-        try {
-          data = JSON.parse(text);
-          jsonOk = true;
-        } catch (_) {}
-
-        if (!r.ok) {
-          const error =
-            (jsonOk && data && (data.error?.message || data.message)) ||
-            `HTTP ${r.status}`;
-          throw Object.assign(new Error(String(error)), {
-            __lexoraHttp: {
-              ok: false,
-              status: r.status,
-              contentType,
-              data: jsonOk ? data : null,
-              __debugSnippet: (globalThis.DEBUG ? (text || '').slice(0, 800) : undefined),
-            },
-          });
-        }
-
-        if (!jsonOk) {
-          throw Object.assign(new Error(`Non-JSON response (HTTP ${r.status}).`), {
-            __lexoraHttp: {
-              ok: true,
-              status: r.status,
-              contentType,
-              __debugSnippet: (globalThis.DEBUG ? (text || '').slice(0, 800) : undefined),
-            },
-          });
-        }
-
-        return { data, meta: { ok: true, status: r.status, contentType } };
-      })
-      .then(({ data, meta }) => sendResponse({ success: true, data, meta }))
-      .catch((err) => {
-        const http = err && err.__lexoraHttp ? err.__lexoraHttp : null;
-        sendResponse({ success: false, error: err?.message || String(err), http });
-      });
-    return true;
+  if (!globalThis.LexoraProxy || typeof LexoraProxy.handleProxyFetch !== 'function') {
+    sendResponse({ success: false, error: 'Proxy module unavailable.' });
+    return false;
+  }
+  return LexoraProxy.handleProxyFetch(browserAPI, {
+    request,
+    sender,
+    sendResponse,
+    isExtensionSender,
+    getConfiguredChatEndpointUrl,
+  });
 }
 
 function handleHighlightRelay(request) {
@@ -211,27 +121,57 @@ function handleHighlightRelay(request) {
         ? LexoraProtocol.isHighlightWordRequest(request)
         : LexoraProtocol.isClearHighlightRequest(request);
     if (!ok) return false;
-    browserAPI.tabs.query({ active: true, currentWindow: true }, tabs => {
-      const tab = tabs[0];
-      if (!tab) return;
-      // If optional `webNavigation` permission isn't granted, fall back to top frame only.
+    const targetKey = STORAGE_KEYS.HIGHLIGHT_TARGET;
+
+    function broadcastAllFrames(tabId) {
       if (!browserAPI.webNavigation || typeof browserAPI.webNavigation.getAllFrames !== 'function') {
-        globalThis.sendMessageSafe(browserAPI, tab.id, request);
+        globalThis.sendMessageSafe(browserAPI, tabId, request);
         return;
       }
       try {
-        browserAPI.webNavigation.getAllFrames({ tabId: tab.id }, frames => {
+        browserAPI.webNavigation.getAllFrames({ tabId }, (frames) => {
           if (!frames) {
-            globalThis.sendMessageSafe(browserAPI, tab.id, request);
+            globalThis.sendMessageSafe(browserAPI, tabId, request);
             return;
           }
           for (const frame of frames) {
-            globalThis.sendMessageSafe(browserAPI, tab.id, request, { frameId: frame.frameId });
+            globalThis.sendMessageSafe(browserAPI, tabId, request, { frameId: frame.frameId });
           }
         });
       } catch (_) {
-        globalThis.sendMessageSafe(browserAPI, tab.id, request);
+        globalThis.sendMessageSafe(browserAPI, tabId, request);
       }
+    }
+
+    function fallbackActiveTab() {
+      browserAPI.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+        const tab = tabs[0];
+        if (!tab) return;
+        broadcastAllFrames(tab.id);
+      });
+    }
+
+    browserAPI.storage.local.get([targetKey], (res) => {
+      const target = res && res[targetKey];
+      const tTab = target && typeof target.tabId === 'number' ? target.tabId : null;
+      const tFrame = target && Number.isInteger(target.frameId) ? target.frameId : null;
+
+      if (tTab == null) {
+        fallbackActiveTab();
+        return;
+      }
+
+      browserAPI.tabs.get(tTab, (tab) => {
+        if (browserAPI.runtime.lastError || !tab) {
+          fallbackActiveTab();
+          return;
+        }
+        if (tFrame != null) {
+          globalThis.sendMessageSafe(browserAPI, tTab, request, { frameId: tFrame });
+          return;
+        }
+        broadcastAllFrames(tTab);
+      });
     });
     return false;
 }
@@ -252,119 +192,181 @@ function handleSelectionActions(request, sender) {
         content: text,
         url: typeof sender.tab.url === 'string' ? sender.tab.url : '',
       };
-      browserAPI.storage.local.set({ currentLesson: pseudoLesson, autoPlaySelectedText: true });
+      const frameId = Number.isInteger(sender.frameId) ? sender.frameId : 0;
+      browserAPI.storage.local.set({
+        currentLesson: pseudoLesson,
+        autoPlaySelectedText: true,
+        [STORAGE_KEYS.HIGHLIGHT_TARGET]: { tabId: sender.tab.id, frameId },
+      });
       globalThis.sendMessageSafe(browserAPI, sender.tab.id, { action: ACTIONS.SET_HIGHLIGHT_ANCHOR, text });
       return;
     }
 
-    // askAiAboutText — same trust + size limits as captureText
-    globalThis.sendRuntimeMessageSafe(browserAPI, { ...request, text });
+    // askAiAboutText — storage only so one delivery path (side panel: onChanged + startup drain).
+    if (request.action === ACTIONS.ASK_AI_ABOUT_TEXT) {
+      try {
+        browserAPI.storage.local.set({
+          [STORAGE_KEYS.PENDING_ASK_AI]: { text, ts: Date.now() },
+        });
+      } catch (e) {
+        globalThis.debugLog('Selection', 'pending ask-ai storage failed', e);
+      }
+    }
     return false;
 }
 
 function handleTriggerDeepCapture(request, sendResponse) {
+  const LC = globalThis.LexoraLessonCapture;
+  if (!LC || typeof LC.beginDeepCaptureOp !== 'function') {
+    sendResponse({ success: false, error: 'Capture module unavailable.' });
+    return true;
+  }
+
   let responded = false;
   const respondOnce = (payload) => {
     if (responded) return;
     responded = true;
-    try { sendResponse(payload); } catch (e) { globalThis.debugLog('Capture', 'Response error', e); }
+    try {
+      sendResponse(payload);
+    } catch (e) {
+      globalThis.debugLog('Capture', 'Response error', e);
+    }
   };
-  // Hard timeout: never leave UI hanging (MV3 SW + permissions can fail silently).
+
+  const opId = LC.beginDeepCaptureOp();
   const timeoutId = setTimeout(() => {
+    LC.invalidateDeepCaptureIfCurrent(opId);
     respondOnce({ success: false, error: 'Capture timed out.' });
   }, 20000);
 
-    const requestedTabId = Number.isInteger(request?.tabId) ? request.tabId : null;
-    const captureTabId = (tabId) => {
-      if (!tabId) {
-        clearTimeout(timeoutId);
-        respondOnce({ success: false, error: 'No active tab' });
-        return;
-      }
+  const requestedTabId = Number.isInteger(request?.tabId) ? request.tabId : null;
+  const captureTabId = (tabId) => {
+    if (!tabId) {
+      clearTimeout(timeoutId);
+      respondOnce({ success: false, error: 'No active tab' });
+      return;
+    }
 
-      try {
-        (async () => {
-          let results;
-          try {
-            await browserAPI.scripting.executeScript({
-              target: { tabId, allFrames: true },
-              files: ['capture-extractor.js'],
-            });
-            results = await browserAPI.scripting.executeScript({
-              target: { tabId, allFrames: true },
-              func: () => {
-                return globalThis.LexoraCaptureExtractor?.extractPageContent(document, location) || null;
-              },
-            });
-          } catch (e) {
+    try {
+      (async () => {
+        let results;
+        try {
+          await browserAPI.scripting.executeScript({
+            target: { tabId, allFrames: true },
+            files: ['lexora-constants.js', 'capture-extractor.js'],
+          });
+          results = await browserAPI.scripting.executeScript({
+            target: { tabId, allFrames: true },
+            func: () => {
+              return globalThis.LexoraCaptureExtractor?.extractPageContent(document, location) || null;
+            },
+          });
+        } catch (e) {
+          clearTimeout(timeoutId);
+          globalThis.debugLog('Capture', `Extraction failed: ${e.message}`, e);
+          respondOnce({ success: false, error: e?.message || 'Capture failed.' });
+          return;
+        }
+
+        if (!LC.isDeepCaptureOpCurrent(opId) || responded) {
+          clearTimeout(timeoutId);
+          return;
+        }
+
+        const mapped = (results || []).map((r) => ({
+          result: r.result,
+          frameId: Number.isInteger(r.frameId) ? r.frameId : 0,
+        }));
+
+        try {
+          let bestRaw = null;
+          let bestFrameId = 0;
+          for (const x of mapped) {
+            const r = x.result;
+            if (!r || !r.content || r.content.length <= MIN_CAPTURE_CONTENT_CHARS) continue;
+            if (!bestRaw || r.content.length >= bestRaw.content.length) {
+              bestRaw = r;
+              bestFrameId = Number.isInteger(x.frameId) ? x.frameId : 0;
+            }
+          }
+
+          if (!bestRaw) {
             clearTimeout(timeoutId);
-            globalThis.debugLog('Capture', `Extraction failed: ${e.message}`, e);
-            respondOnce({ success: false, error: e?.message || 'Capture failed.' });
+            respondOnce({ success: false, error: 'No content found on this page.' });
+            globalThis.sendMessageSafe(browserAPI, tabId, { action: ACTIONS.CAPTURE_FINISHED, success: false });
             return;
           }
 
-          try {
-            const valid = (results || [])
-              .map(r => r.result)
-              .filter(r => r && r.content && r.content.length > 80);
+          const best = cleanCapturedLessonNonAi(bestRaw);
 
-            if (!valid.length) {
-              clearTimeout(timeoutId);
-              respondOnce({ success: false, error: 'No content found on this page.' });
-              globalThis.sendMessageSafe(browserAPI, tabId, { action: ACTIONS.CAPTURE_FINISHED, success: false });
-              return;
-            }
-
-            const bestRaw = valid.reduce((a, b) => a.content.length >= b.content.length ? a : b);
-            const best = cleanCapturedLessonNonAi(bestRaw);
-
-            browserAPI.storage.local.set({ currentLesson: best });
+          if (!LC.isDeepCaptureOpCurrent(opId) || responded) {
             clearTimeout(timeoutId);
-            respondOnce({ success: true, data: best });
-            globalThis.sendMessageSafe(browserAPI, tabId, { action: ACTIONS.CAPTURE_FINISHED, success: true });
-          } catch (_e) {
-            globalThis.debugLog('Capture', 'Failed to store lesson', _e);
-            try {
-              const fallback = (results || [])
-                .map(r => r.result)
-                .filter(r => r && r.content && r.content.length > 80)
-                .reduce((a, b) => a.content.length >= b.content.length ? a : b, null);
-              if (fallback) {
-                const polished = cleanCapturedLessonNonAi(fallback);
-                browserAPI.storage.local.set({ currentLesson: polished });
-                clearTimeout(timeoutId);
-                respondOnce({ success: true, data: polished });
-                globalThis.sendMessageSafe(browserAPI, tabId, { action: ACTIONS.CAPTURE_FINISHED, success: true });
-              } else {
-                clearTimeout(timeoutId);
-                globalThis.debugLog('Capture', `Extraction failed: ${_e.message}`, _e);
-                respondOnce({ success: false, error: _e?.message || 'Capture failed' });
-                globalThis.sendMessageSafe(browserAPI, tabId, { action: ACTIONS.CAPTURE_FINISHED, success: false });
-              }
-            } catch (e) {
-              clearTimeout(timeoutId);
-              globalThis.debugLog('Capture', `Fatal capture error: ${e.message}`, e);
-              respondOnce({ success: false, error: e?.message || 'Capture failed' });
-            }
+            return;
           }
-        })();
-      } catch (e) {
-        clearTimeout(timeoutId);
-        globalThis.debugLog('Capture', `Script error: ${e.message}`, e);
-        respondOnce({ success: false, error: e?.message || 'Capture failed' });
-      }
-    };
 
-    if (requestedTabId) {
-      captureTabId(requestedTabId);
-      return true;
+          browserAPI.storage.local.set({
+            currentLesson: best,
+            [STORAGE_KEYS.HIGHLIGHT_TARGET]: { tabId, frameId: bestFrameId },
+          });
+          clearTimeout(timeoutId);
+          respondOnce({ success: true, data: best });
+          globalThis.sendMessageSafe(browserAPI, tabId, { action: ACTIONS.CAPTURE_FINISHED, success: true });
+        } catch (_e) {
+          globalThis.debugLog('Capture', 'Failed to store lesson', _e);
+          try {
+            let fallback = null;
+            let fbFrame = 0;
+            for (const x of mapped) {
+              const r = x.result;
+              if (!r || !r.content || r.content.length <= MIN_CAPTURE_CONTENT_CHARS) continue;
+              if (!fallback || r.content.length >= fallback.content.length) {
+                fallback = r;
+                fbFrame = Number.isInteger(x.frameId) ? x.frameId : 0;
+              }
+            }
+            if (fallback) {
+              if (!LC.isDeepCaptureOpCurrent(opId) || responded) {
+                clearTimeout(timeoutId);
+                return;
+              }
+              const polished = cleanCapturedLessonNonAi(fallback);
+              browserAPI.storage.local.set({
+                currentLesson: polished,
+                [STORAGE_KEYS.HIGHLIGHT_TARGET]: { tabId, frameId: fbFrame },
+              });
+              clearTimeout(timeoutId);
+              respondOnce({ success: true, data: polished });
+              globalThis.sendMessageSafe(browserAPI, tabId, { action: ACTIONS.CAPTURE_FINISHED, success: true });
+            } else {
+              clearTimeout(timeoutId);
+              globalThis.debugLog('Capture', `Extraction failed: ${_e.message}`, _e);
+              respondOnce({ success: false, error: _e?.message || 'Capture failed' });
+              globalThis.sendMessageSafe(browserAPI, tabId, { action: ACTIONS.CAPTURE_FINISHED, success: false });
+            }
+          } catch (e) {
+            clearTimeout(timeoutId);
+            globalThis.debugLog('Capture', `Fatal capture error: ${e.message}`, e);
+            respondOnce({ success: false, error: e?.message || 'Capture failed' });
+          }
+        }
+      })();
+    } catch (e) {
+      clearTimeout(timeoutId);
+      globalThis.debugLog('Capture', `Script error: ${e.message}`, e);
+      respondOnce({ success: false, error: e?.message || 'Capture failed' });
     }
+  };
 
-    browserAPI.tabs.query({ active: true, currentWindow: true }, tabs => {
-      const tab = tabs[0];
-      captureTabId(tab && tab.id);
-    });
-    return true; // async
+  if (requestedTabId) {
+    captureTabId(requestedTabId);
+    return true;
+  }
+
+  browserAPI.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+    const tab = tabs[0];
+    captureTabId(tab && tab.id);
+  });
+  return true;
 }
 
 function handleProbeCapturable(request, sendResponse) {
@@ -390,7 +392,7 @@ function handleProbeCapturable(request, sendResponse) {
       browserAPI.scripting.executeScript(
         {
           target: { tabId: tab.id, allFrames: true },
-          files: ['capture-extractor.js'],
+          files: ['lexora-constants.js', 'capture-extractor.js'],
         },
         () => {
           if (browserAPI.runtime.lastError) {
@@ -534,7 +536,7 @@ browserAPI.action.onClicked.addListener((_tab) => {
       try {
         await browserAPI.scripting.executeScript({
           target: { tabId: _tab.id, allFrames: true },
-          files: ['capture-extractor.js', 'content.js'],
+          files: [...LEXORA_PAGE_SCRIPT_FILES],
         });
         await sendToTab(_tab.id, { action: ACTIONS.TOGGLE_OVERLAY });
       } catch (e) {
@@ -548,15 +550,16 @@ browserAPI.action.onClicked.addListener((_tab) => {
 if (browserAPI.webNavigation && browserAPI.webNavigation.onCompleted) {
   browserAPI.webNavigation.onCompleted.addListener((details) => {
     if (details.frameId === 0) {
+      const LC = globalThis.LexoraLessonCapture;
+      const opId = LC && typeof LC.bumpAutoCaptureAndGetId === 'function' ? LC.bumpAutoCaptureAndGetId() : 0;
       browserAPI.storage.local.get(['lexoraConfig'], (res) => {
         if (res.lexoraConfig && res.lexoraConfig.autoCapture) {
-          // Trigger capture for this tab
-          // Wait a moment for dynamic content to load before capturing
           setTimeout(() => {
+            if (LC && !LC.isAutoCaptureOpCurrent(opId)) return;
             browserAPI.scripting.executeScript(
               {
                 target: { tabId: details.tabId },
-                files: ['capture-extractor.js'],
+                files: ['lexora-constants.js', 'capture-extractor.js'],
               },
               () => {
                 if (browserAPI.runtime.lastError) return;
@@ -570,10 +573,21 @@ if (browserAPI.webNavigation && browserAPI.webNavigation.onCompleted) {
                   (results) => {
                     try {
                       if (browserAPI.runtime.lastError) return;
+                      if (LC && !LC.isAutoCaptureOpCurrent(opId)) return;
                       const best = (results || [])
                         .map((r) => r.result)
-                        .find((r) => r && r.content && r.content.length > 80);
-                      if (best) handleAutoCaptureSave({ action: ACTIONS.AUTO_CAPTURE_SAVE, data: best });
+                        .find((r) => r && r.content && r.content.length > MIN_CAPTURE_CONTENT_CHARS);
+                      if (!best) return;
+                      let polished = best;
+                      try {
+                        polished = cleanCapturedLessonNonAi(best);
+                      } catch (e) {
+                        globalThis.debugLog('Capture', 'Failed to polish auto-capture', e);
+                      }
+                      browserAPI.storage.local.set({
+                        currentLesson: polished,
+                        [STORAGE_KEYS.HIGHLIGHT_TARGET]: { tabId: details.tabId, frameId: 0 },
+                      });
                     } catch (e) {
                       globalThis.debugLog('ContentScript', 'Failed to execute script fallback', e);
                     }

@@ -15,6 +15,7 @@ const localDir = self.location.href.substring(
 env.wasmPaths = localDir;
 
 const MODEL_ID = "onnx-community/Kokoro-82M-v1.0-ONNX";
+const INIT_TIMEOUT_MS = 120_000;
 
 let tts = null;
 let initPromise = null;
@@ -29,6 +30,15 @@ function log(msg) {
   self.postMessage({ type: "log", message: msg });
 }
 
+function withTimeout(promise, ms, label) {
+  return Promise.race([
+    promise,
+    new Promise((_, rej) =>
+      setTimeout(() => rej(new Error(`${label} timed out after ${ms / 1000}s`)), ms)
+    ),
+  ]);
+}
+
 async function init(dtype = "q8", device = "wasm") {
   if (initPromise) return initPromise;
 
@@ -37,11 +47,15 @@ async function init(dtype = "q8", device = "wasm") {
       log(`WASM paths → ${localDir}`);
       log(`Loading model: ${MODEL_ID} (${dtype}/${device})…`);
 
-      tts = await KokoroTTS.from_pretrained(MODEL_ID, {
-        dtype,
-        device,
-        progress_callback: (p) => self.postMessage({ type: "progress", progress: p }),
-      });
+      tts = await withTimeout(
+        KokoroTTS.from_pretrained(MODEL_ID, {
+          dtype,
+          device,
+          progress_callback: (p) => self.postMessage({ type: "progress", progress: p }),
+        }),
+        INIT_TIMEOUT_MS,
+        "Kokoro model load"
+      );
 
       let voices = [];
       try { voices = tts.list_voices() || []; } catch (_) {}

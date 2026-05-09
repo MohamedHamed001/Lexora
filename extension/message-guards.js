@@ -7,7 +7,8 @@
   const MAX_LESSON_CONTENT_CHARS = 2_000_000;
   const MAX_LESSON_TITLE_CHARS = 2_000;
   const MAX_LESSON_URL_CHARS = 8_192;
-  const MIN_CAPTURE_CONTENT_CHARS = 80;
+  const MIN_CAPTURE_CONTENT_CHARS =
+    (global.LexoraConstants && global.LexoraConstants.MIN_CAPTURE_CONTENT_CHARS) || 80;
 
   function isTrustedSelectionSender(sender, runtimeId) {
     if (!sender) return false;

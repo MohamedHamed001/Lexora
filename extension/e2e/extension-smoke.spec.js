@@ -1,6 +1,7 @@
-import { test, expect, chromium } from '@playwright/test';
+import { test, expect } from '@playwright/test';
 import path from 'node:path';
 import http from 'node:http';
+import { launchChromiumWithExtension } from './chromium-extension-context.js';
 
 function extensionPath() {
   return path.join(process.cwd(), 'extension');
@@ -15,12 +16,7 @@ test('loads extension and opens a normal page', async () => {
   const { port } = server.address();
 
   // Chromium extensions require a persistent context.
-  const context = await chromium.launchPersistentContext('', {
-    args: [
-      `--disable-extensions-except=${extensionPath()}`,
-      `--load-extension=${extensionPath()}`,
-    ],
-  });
+  const context = await launchChromiumWithExtension(extensionPath());
 
   try {
     const page = await context.newPage();

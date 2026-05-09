@@ -8,7 +8,18 @@ export function initExport() {
   dom.exportPdfBtn.addEventListener('click', () => {
     if (!state.currentLesson) return;
     const JsPDF = (window.jspdf && window.jspdf.jsPDF) || window.jsPDF;
-    if (!JsPDF) return;
+    if (!JsPDF) {
+      if (dom.exportInfo) {
+        dom.exportInfo.textContent =
+          '❌ PDF export library not loaded. Reload the side panel or check your connection.';
+        dom.exportInfo.style.color = 'var(--error)';
+        setTimeout(() => {
+          if (dom.exportInfo) dom.exportInfo.textContent = 'Save your lesson as a PDF for offline reading.';
+          if (dom.exportInfo) dom.exportInfo.style.color = '';
+        }, 6000);
+      }
+      return;
+    }
     try {
       const doc = new JsPDF({ unit: 'mm', format: 'a4' });
       const PW = doc.internal.pageSize.getWidth();

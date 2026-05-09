@@ -1,11 +1,13 @@
 import { state } from './state.js';
 import { dom } from './dom.js';
 import { mdToDomFragment, clearMarks, markMatches } from './utils.js';
+import { sendRuntimeMessageSafe } from './messaging.js';
 
 const A = (globalThis.LexoraProtocol && LexoraProtocol.ACTIONS) || null;
 const K = (globalThis.LexoraStorage && LexoraStorage.KEYS) || {
   CURRENT_LESSON: 'currentLesson',
   AUTO_PLAY_SELECTED_TEXT: 'autoPlaySelectedText',
+  PENDING_ASK_AI: 'lexoraPendingAskAi',
 };
 
 let audioCtrl = null;
@@ -46,8 +48,26 @@ function showNoSupportedContent(message) {
   if (contentTab) contentTab.click();
 }
 
+function deliverPendingAskAi(pending) {
+  if (!pending || typeof pending.text !== 'string' || !pending.text.trim()) return;
+  const text = pending.text.trim();
+  state.browserAPI.storage.local.remove([K.PENDING_ASK_AI]);
+  const chatTab = document.querySelector('.tab[data-tab="chat"]');
+  if (chatTab) chatTab.click();
+  import('./chat.js').then(({ submitQuery }) => {
+    submitQuery(`Explain this text:\n\n"${text}"`, false);
+  });
+}
+
 export function initUI({ audio }) {
   audioCtrl = audio;
+  try {
+    state.browserAPI.storage.local.get([K.PENDING_ASK_AI], (res) => {
+      deliverPendingAskAi(res && res[K.PENDING_ASK_AI]);
+    });
+  } catch (_) {
+    /* ignore */
+  }
   // ── Tab switching ──────────────────────────────────────────────────────────
   document.querySelectorAll('.tab').forEach(tab => {
     tab.onclick = () => {
@@ -139,22 +159,16 @@ export function initUI({ audio }) {
       setReady({ status: 'unknown', reason: 'Checking page…' });
     }
     try {
-      // Support both callback-style (chrome) and promise-style (browser) APIs.
-      const maybePromise = state.browserAPI.runtime.sendMessage({ action: A ? A.PROBE_CAPTURABLE : 'probeCapturable' }, (resp) => {
-        _probeInFlight = false;
-        if (resp?.success) setReady({ status: resp.status, reason: resp.reason });
-        else setReady({ status: 'unknown', reason: resp?.error || 'Checking page…' });
+      const wrap = await sendRuntimeMessageSafe(state.browserAPI, {
+        action: A ? A.PROBE_CAPTURABLE : 'probeCapturable',
       });
-
-      if (maybePromise && typeof maybePromise.then === 'function') {
-        const resp = await maybePromise;
-        _probeInFlight = false;
-        if (resp?.success) setReady({ status: resp.status, reason: resp.reason });
-        else setReady({ status: 'unknown', reason: resp?.error || 'Checking page…' });
-      }
+      const resp = wrap?.ok ? wrap.data : { success: false, error: wrap?.error || 'Checking page…' };
+      if (resp?.success) setReady({ status: resp.status, reason: resp.reason });
+      else setReady({ status: 'unknown', reason: resp?.error || 'Checking page…' });
     } catch (e) {
-      _probeInFlight = false;
       setReady({ status: 'restricted', reason: e?.message || 'This page blocks extraction.' });
+    } finally {
+      _probeInFlight = false;
     }
   }
 
@@ -194,6 +208,9 @@ export function initUI({ audio }) {
   // Refresh UI if storage updates (e.g. overlay/sidepanel sync).
   state.browserAPI.storage.onChanged.addListener((changes, areaName) => {
     if (areaName !== 'local') return;
+    if (changes[K.PENDING_ASK_AI]?.newValue) {
+      deliverPendingAskAi(changes[K.PENDING_ASK_AI].newValue);
+    }
     if (changes[K.CURRENT_LESSON]?.newValue) {
       state.currentLesson = changes[K.CURRENT_LESSON].newValue;
       applyLesson(state.currentLesson);

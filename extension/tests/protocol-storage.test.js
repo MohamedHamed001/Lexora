@@ -22,7 +22,15 @@ describe('protocol.js', () => {
     expect(P.isTextSelectionRequest({ action: 'captureText', text: 'hello' })).toBe(true);
     expect(P.isTextSelectionRequest({ action: 'captureText', text: '   ' })).toBe(false);
     expect(P.isHighlightWordRequest({ action: 'highlightWord', chunkText: 'hello', wordIndex: 0 })).toBe(true);
+    expect(
+      P.isHighlightWordRequest({ action: 'highlightWord', chunkText: 'hello', wordIndex: 0, playbackGen: 2 })
+    ).toBe(true);
+    expect(
+      P.isHighlightWordRequest({ action: 'highlightWord', chunkText: 'hello', wordIndex: 0, playbackGen: -1 })
+    ).toBe(false);
     expect(P.isHighlightWordRequest({ action: 'highlightWord', chunkText: 'hello', wordIndex: -1 })).toBe(false);
+    expect(P.isClearHighlightRequest({ action: 'clearHighlight', playbackGen: 1 })).toBe(true);
+    expect(P.isClearHighlightRequest({ action: 'clearHighlight', playbackGen: -1 })).toBe(false);
     expect(P.isProxyFetchRequest({ action: 'proxyFetch', url: 'http://127.0.0.1', method: 'POST' })).toBe(true);
     expect(P.isAutoCaptureSaveRequest({ action: 'autoCaptureSave', data: { content: 'x' } })).toBe(true);
     expect(P.isAutoCaptureSaveRequest({ action: 'autoCaptureSave' })).toBe(false);
@@ -33,6 +41,8 @@ describe('storage.js', () => {
   test('exports KEYS and progress key helper', async () => {
     const S = await loadGlobalScript('extension/storage.js', 'LexoraStorage');
     expect(S.KEYS.CURRENT_LESSON).toBe('currentLesson');
+    expect(S.KEYS.HIGHLIGHT_TARGET).toBe('lexoraHighlightTarget');
+    expect(S.KEYS.PENDING_ASK_AI).toBe('lexoraPendingAskAi');
     expect(S.KEYS.PROGRESS_INDEX).toBe('lexoraProgressIndex');
     expect(typeof S.progressKeyForUrl).toBe('function');
     expect(typeof S.legacyProgressKeyForUrl).toBe('function');

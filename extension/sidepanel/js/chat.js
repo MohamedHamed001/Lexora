@@ -2,24 +2,27 @@ import { sendRuntimeMessageSafe, debugLog } from './messaging.js';
 import { state } from './state.js';
 import { dom } from './dom.js';
 import { mdToDomFragment } from './utils.js';
+import {
+  FENCE_OPEN,
+  FENCE_CLOSE,
+  budgetLessonContext,
+} from './chat-context.js';
 
 const A = (globalThis.LexoraProtocol && LexoraProtocol.ACTIONS) || null;
 
-const MAX_LESSON_CONTEXT_CHARS = 8000;
+/** Stay under `proxy.js` MAX_REQUEST_BODY_CHARS (250k) with margin for headers/serialization. */
+const MAX_PROXY_BODY_JSON_CHARS = 200_000;
 
-// Hardening against prompt injection: lesson content is treated as untrusted.
-// Use unique fence tokens so a malicious page can't easily forge an "end" marker.
-const FENCE_OPEN = '<<<LEXORA_SOURCE_START>>>';
-const FENCE_CLOSE = '<<<LEXORA_SOURCE_END>>>';
+function chatPayloadJsonLength(model, systemPrompt, historySlice) {
+  return JSON.stringify({
+    model,
+    messages: [{ role: 'system', content: systemPrompt }, ...historySlice],
+    temperature: 0.7,
+  }).length;
+}
 
 function buildSafeContext(lesson) {
-  const raw = String(lesson?.content ?? '');
-  const truncated = raw.length > MAX_LESSON_CONTEXT_CHARS
-    ? raw.slice(0, MAX_LESSON_CONTEXT_CHARS) + '\n...[content truncated]...'
-    : raw;
-  // Strip any literal occurrence of the fence tokens from the captured text so
-  // a hostile page cannot inject a fake closing fence to escape the boundary.
-  return truncated.split(FENCE_OPEN).join('').split(FENCE_CLOSE).join('');
+  return budgetLessonContext(String(lesson?.content ?? ''));
 }
 
 function buildSystemPrompt(lesson) {
@@ -67,6 +70,25 @@ export function submitQuery(q, isHidden = false) {
   state.chatHistory.push({ role: 'user', content: q });
 
   const systemPrompt = buildSystemPrompt(state.currentLesson);
+
+  while (
+    state.chatHistory.length > 1 &&
+    chatPayloadJsonLength(state.config.model, systemPrompt, state.chatHistory) > MAX_PROXY_BODY_JSON_CHARS
+  ) {
+    state.chatHistory.splice(0, 2);
+  }
+  if (
+    state.chatHistory.length === 1 &&
+    chatPayloadJsonLength(state.config.model, systemPrompt, state.chatHistory) > MAX_PROXY_BODY_JSON_CHARS
+  ) {
+    const only = state.chatHistory[0];
+    if (only && only.role === 'user' && typeof only.content === 'string') {
+      const over =
+        chatPayloadJsonLength(state.config.model, systemPrompt, state.chatHistory) - MAX_PROXY_BODY_JSON_CHARS;
+      const keep = Math.max(500, only.content.length - over - 64);
+      only.content = only.content.slice(0, keep) + '\n...[message truncated for size]...';
+    }
+  }
 
   const thinking = addBubble('ai', '…');
   sendRuntimeMessageSafe(state.browserAPI, {

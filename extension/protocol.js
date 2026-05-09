@@ -53,12 +53,17 @@
       msg.action === ACTIONS.HIGHLIGHT_WORD &&
       typeof msg.chunkText === 'string' &&
       Number.isInteger(msg.wordIndex) &&
-      msg.wordIndex >= 0
+      msg.wordIndex >= 0 &&
+      (!('playbackGen' in msg) || (Number.isInteger(msg.playbackGen) && msg.playbackGen >= 0))
     );
   }
 
   function isClearHighlightRequest(msg) {
-    return isObject(msg) && msg.action === ACTIONS.CLEAR_HIGHLIGHT;
+    return (
+      isObject(msg) &&
+      msg.action === ACTIONS.CLEAR_HIGHLIGHT &&
+      (!('playbackGen' in msg) || (Number.isInteger(msg.playbackGen) && msg.playbackGen >= 0))
+    );
   }
 
   function isAutoCaptureSaveRequest(msg) {

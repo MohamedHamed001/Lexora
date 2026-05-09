@@ -89,6 +89,8 @@ export class AudioController {
     this.seekDebounce = null;
     this.seekBarDragging = false;
     this.currentSynthesisId = 0;
+    /** Bumped when playback is cancelled so content can ignore stale highlight messages. */
+    this.playbackGen = 0;
 
     // Kokoro state
     this.kokoroWorker = null;
@@ -348,6 +350,7 @@ export class AudioController {
   }
 
   cancelAudio(clearCache = false) {
+    this.playbackGen++;
     this.currentSynthesisId++;
     this.sysUtteranceHighlight = false;
     if (this.kokoroWorker) {
@@ -357,6 +360,14 @@ export class AudioController {
     for (const w of this.prefetchPool) {
       try { w.postMessage({ type: 'cancel' }); }
       catch (err) { debugLog('AudioController', 'kokoro prefetch worker cancel failed', err); }
+    }
+    if (this.piperMainWorker) {
+      try { this.piperMainWorker.postMessage({ type: 'cancel' }); }
+      catch (err) { debugLog('AudioController', 'piper main worker cancel failed', err); }
+    }
+    for (const w of this.piperPrefetchPool) {
+      try { w.postMessage({ type: 'cancel' }); }
+      catch (err) { debugLog('AudioController', 'piper prefetch worker cancel failed', err); }
     }
     this.synthQueue = [];
     this.stopSeekerTimer();
@@ -386,6 +397,22 @@ export class AudioController {
       }
       for (const [k, v] of this.piperAudioCache) {
         if (v == null) this.piperAudioCache.delete(k);
+      }
+    }
+    this._trimPrefetchCaches();
+  }
+
+  _trimPrefetchCaches() {
+    const radius = Math.max(PIPER_PREFETCH_WINDOW, PREFETCH_WINDOW) + 4;
+    const c = this.sentenceIdx;
+    for (const map of [this.audioCache, this.piperAudioCache]) {
+      for (const [k, v] of map) {
+        if (typeof k !== 'number' || !Number.isFinite(k)) continue;
+        if (Math.abs(k - c) <= radius) continue;
+        if (v && v.url) {
+          try { URL.revokeObjectURL(v.url); } catch (_) { /* ignore */ }
+        }
+        map.delete(k);
       }
     }
   }
@@ -491,6 +518,7 @@ export class AudioController {
           action: A.HIGHLIGHT_WORD,
           chunkText: this.currentChunkText,
           wordIndex: wordIdx,
+          playbackGen: this.playbackGen,
         }).then((w) => {
           if (!w?.ok) debugLog('AudioController', 'highlightWord relay failed', w?.error);
         });
@@ -520,7 +548,11 @@ export class AudioController {
     this.currentChunkText = '';
     this.lastHighlightedWord = -1;
     const A = lexoraActions();
-    sendRuntimeMessageSafe(this.browserAPI, { action: A.CLEAR_HIGHLIGHT, fullReset }).then((w) => {
+    sendRuntimeMessageSafe(this.browserAPI, {
+      action: A.CLEAR_HIGHLIGHT,
+      fullReset,
+      playbackGen: this.playbackGen,
+    }).then((w) => {
       if (!w?.ok) debugLog('AudioController', 'clearHighlight relay failed', w?.error);
     });
   }

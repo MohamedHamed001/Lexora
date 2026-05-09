@@ -1,5 +1,17 @@
 // Shared page extraction/probing helpers for injected extension contexts.
 (function initLexoraCaptureExtractor(global) {
+  const MINL =
+    (global.LexoraConstants && global.LexoraConstants.MIN_CAPTURE_CONTENT_CHARS) || 80;
+  const LIMITS = Object.freeze({
+    /** Aligned with LexoraConstants / background “best frame” lesson threshold. */
+    MIN_LESSON_CONTENT_CHARS: MINL,
+    /** Probe caps work for very large pages; scoring uses the same formatter as extract. */
+    PROBE_BLOCK_CAP: 250,
+    /** HTML vs PDF readiness thresholds (chars after formatting / collection). */
+    HTML_READY_CHARS: 800,
+    PDF_READY_CHARS: 400,
+  });
+
   function normalizeLine(s) {
     return (s || '')
       .replace(/\u00a0/g, ' ')
@@ -124,10 +136,10 @@
   }
 
   function scoreContent({ htmlChars, pdfChars }) {
-    // Determine the dominant format and capturable status
-    const isPdfDominant = pdfChars >= 400 && pdfChars > htmlChars * 0.8;
-    const capturable = isPdfDominant ? pdfChars >= 400 : htmlChars >= 800;
-    const kind = isPdfDominant ? 'pdf' : (htmlChars >= 800 ? 'html' : 'unknown');
+    const { PDF_READY_CHARS, HTML_READY_CHARS } = LIMITS;
+    const isPdfDominant = pdfChars >= PDF_READY_CHARS && pdfChars > htmlChars * 0.8;
+    const capturable = isPdfDominant ? pdfChars >= PDF_READY_CHARS : htmlChars >= HTML_READY_CHARS;
+    const kind = isPdfDominant ? 'pdf' : htmlChars >= HTML_READY_CHARS ? 'html' : 'unknown';
 
     return {
       capturable,
@@ -150,7 +162,7 @@
     
     const content = score.kind === 'pdf' ? pdfText : htmlFormatted;
 
-    if (!score.capturable || !content || content.length < 80) {
+    if (!score.capturable || !content || content.length < LIMITS.MIN_LESSON_CONTENT_CHARS) {
       const pdfUrl = findPdfUrl(doc);
       if (!pdfUrl) return null;
       return {
@@ -167,21 +179,18 @@
     };
   }
 
-  // Maximum blocks the probe will format. The probe only needs to know
-  // whether the page crosses the readiness threshold; capping keeps the work
-  // bounded on very large pages while still using the *same* measurement that
-  // extractPageContent uses, so probe and capture cannot disagree on
-  // borderline content.
-  const PROBE_BLOCK_CAP = 250;
-
   function probePageContent(doc = global.document, loc = global.location) {
     if (!doc || !loc || isRestrictedProtocol(loc.protocol)) {
       return { capturable: false, status: 'restricted', reason: 'Extension pages are not capturable.' };
     }
 
-    const pdfText = collectPdfText(doc);
-    const blocks = collectHtmlBlocks(doc);
-    const probedBlocks = blocks.length > PROBE_BLOCK_CAP ? blocks.slice(0, PROBE_BLOCK_CAP) : blocks;
+    // Same `seen` semantics as extractPageContent so probe/extract agree on dedup
+    // between HTML blocks and PDF text layers.
+    const seen = new Set();
+    const blocks = collectHtmlBlocks(doc, seen);
+    const pdfText = collectPdfText(doc, seen);
+    const probedBlocks =
+      blocks.length > LIMITS.PROBE_BLOCK_CAP ? blocks.slice(0, LIMITS.PROBE_BLOCK_CAP) : blocks;
     const htmlChars = formatBlocks(probedBlocks).length;
     const pdfChars = pdfText.length;
     const score = scoreContent({ htmlChars, pdfChars });
@@ -194,6 +203,7 @@
   }
 
   global.LexoraCaptureExtractor = Object.freeze({
+    LIMITS,
     normalizeLine,
     extractPageContent,
     probePageContent,

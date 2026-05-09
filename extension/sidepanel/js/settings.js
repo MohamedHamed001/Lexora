@@ -162,13 +162,13 @@ export function initSettings({ audio }) {
       if (dom.settingKey) dom.settingKey.value = state.config.key || '';
       if (dom.settingRememberKey) dom.settingRememberKey.checked = rememberedKey;
       if (dom.settingTheme) {
-      dom.settingTheme.checked = state.config.theme === 'light';
-      if (state.config.theme === 'light') {
-        document.body.classList.add('theme-light');
-      } else {
-        document.body.classList.remove('theme-light');
+        dom.settingTheme.checked = state.config.theme === 'light';
+        if (state.config.theme === 'light') {
+          document.body.classList.add('theme-light');
+        } else {
+          document.body.classList.remove('theme-light');
+        }
       }
-    }
     if (dom.settingAutoCapture) {
       dom.settingAutoCapture.checked = !!state.config.autoCapture;
     }

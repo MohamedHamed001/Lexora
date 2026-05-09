@@ -6,6 +6,9 @@
  */
 importScripts('ort.min.js', 'piper_phonemize.js');
 
+/** Bumped on cancel — discard synthesis after phonemize/run if stale (matches Kokoro worker pattern). */
+let piperWorkEpoch = 0;
+
 // ── Remote model registry ───────────────────────────────────────────────────
 const PIPER_REMOTE_MODELS = {
   amy: {
@@ -341,11 +344,13 @@ async function synthesize(text, requestId, prefetchIdx) {
     return;
   }
 
+  const epochAtStart = piperWorkEpoch;
   try {
     const tag = prefetchIdx != null ? `[prefetch ${prefetchIdx}] ` : '';
     log(`${tag}Synthesizing text: "${text.substring(0, 30)}${text.length > 30 ? '…' : ''}"`);
     
     const phonemeRes = phonemizer.phonemize(text, config.espeak.voice);
+    if (epochAtStart !== piperWorkEpoch) return;
     if (!phonemeRes || !phonemeRes.length || !phonemeRes[0].phonemes) {
       throw new Error('Phonemize failed: unexpected output structure');
     }
@@ -394,6 +399,7 @@ async function synthesize(text, requestId, prefetchIdx) {
 
     const startTime = performance.now();
     const outputs = await session.run(feeds);
+    if (epochAtStart !== piperWorkEpoch) return;
     const endTime = performance.now();
     
     const audioOut = outputs[session.outputNames[0]]; // Use first output
@@ -409,6 +415,7 @@ async function synthesize(text, requestId, prefetchIdx) {
       [audioData.buffer]
     );
   } catch (e) {
+    if (epochAtStart !== piperWorkEpoch) return;
     log(`Synthesis Error: ${e.message}`);
     self.postMessage({
       type: 'error',
@@ -425,5 +432,7 @@ self.onmessage = async (e) => {
   } else if (e.data.type === 'synthesize') {
     if (initPromise) await initPromise;
     await synthesize(e.data.text, e.data.requestId, e.data.prefetchIdx);
+  } else if (e.data.type === 'cancel') {
+    piperWorkEpoch++;
   }
 };
