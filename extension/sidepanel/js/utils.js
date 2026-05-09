@@ -172,11 +172,28 @@ export function encodeWAV(samples, sampleRate = 24000) {
  * Split text into short chunks for faster synthesis.
  * Targets ~80-150 chars per chunk, breaking at natural pause points.
  */
+/** Placeholder so sentence split does not treat abbreviations as sentence ends. */
+const ABBREV_DOT_PLACEHOLDER = '\uE000';
+
+/**
+ * Temporarily replace periods in common abbreviations so `(?<=[.!?…])\s+` does
+ * not split "Mr. Smith" or "e.g. foo" incorrectly. Restores dots after split.
+ */
+function maskAbbreviationPeriodsForSplit(s) {
+  return s.replace(
+    /\b(?:Mr|Mrs|Ms|Dr|Prof|St|Sr|Jr|vs|etc|al|fig|no|approx|ca)\.(?=\s)/gi,
+    (m) => m.slice(0, -1) + ABBREV_DOT_PLACEHOLDER
+  ).replace(/\b(?:e\.g|i\.e)\.(?=\s)/gi, (m) => m.replace(/\./g, ABBREV_DOT_PLACEHOLDER));
+}
+
 export function splitIntoChunks(text, maxLen = 120) {
   if (!text || !text.trim()) return [];
 
-  // First split into sentences
-  const rawSentences = text.match(/[^.!?…]+[.!?…]+(?:\s|$)/g) || [text];
+  // Split on whitespace that FOLLOWS a sentence terminator. Mask abbreviations
+  // first so "Mr. Smith" and "e.g. …" stay one clause; unmasked "e.g., x" still
+  // splits correctly after the comma.
+  const masked = maskAbbreviationPeriodsForSplit(text);
+  const rawSentences = masked.split(/(?<=[.!?…])\s+/).map((t) => t.replaceAll(ABBREV_DOT_PLACEHOLDER, '.'));
   const chunks = [];
 
   for (const sent of rawSentences) {

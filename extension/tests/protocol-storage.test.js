@@ -24,6 +24,8 @@ describe('protocol.js', () => {
     expect(P.isHighlightWordRequest({ action: 'highlightWord', chunkText: 'hello', wordIndex: 0 })).toBe(true);
     expect(P.isHighlightWordRequest({ action: 'highlightWord', chunkText: 'hello', wordIndex: -1 })).toBe(false);
     expect(P.isProxyFetchRequest({ action: 'proxyFetch', url: 'http://127.0.0.1', method: 'POST' })).toBe(true);
+    expect(P.isAutoCaptureSaveRequest({ action: 'autoCaptureSave', data: { content: 'x' } })).toBe(true);
+    expect(P.isAutoCaptureSaveRequest({ action: 'autoCaptureSave' })).toBe(false);
   });
 });
 

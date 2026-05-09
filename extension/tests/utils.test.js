@@ -11,6 +11,14 @@ describe('splitIntoChunks', () => {
   test('empty string returns empty array', () => {
     expect(splitIntoChunks('')).toEqual([]);
   });
+
+  test('does not split after honorific or e.g. / i.e.', () => {
+    const t = 'Mr. Smith went home. Coffee can be prepared (e.g., espresso). i.e. it varies.';
+    const chunks = splitIntoChunks(t, 200);
+    expect(chunks.some((c) => c.includes('Mr. Smith'))).toBe(true);
+    expect(chunks.some((c) => /\(e\.g\.,\s*espresso\)/.test(c))).toBe(true);
+    expect(chunks.some((c) => c.includes('i.e.'))).toBe(true);
+  });
 });
 
 describe('mdToDomFragment', () => {

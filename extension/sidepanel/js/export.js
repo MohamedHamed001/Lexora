@@ -1,3 +1,4 @@
+import { debugLog } from './messaging.js';
 import { state } from './state.js';
 import { dom } from './dom.js';
 
@@ -126,6 +127,16 @@ export function initExport() {
 
       addPageNumber();
       doc.save(`${state.currentLesson.title.slice(0, 30).replace(/[/\\?%*:|"<>]/g, '-')}.pdf`);
-    } catch (err) { console.error(err); }
+    } catch (err) {
+      debugLog('Export', 'Failed to generate PDF', err);
+      if (dom.exportInfo) {
+        dom.exportInfo.textContent = `❌ Export failed: ${err.message || 'Unknown error'}`;
+        dom.exportInfo.style.color = 'var(--error)';
+        setTimeout(() => {
+          if (dom.exportInfo) dom.exportInfo.textContent = 'Save your lesson as a PDF for offline reading.';
+          if (dom.exportInfo) dom.exportInfo.style.color = '';
+        }, 5000);
+      }
+    }
   });
 }

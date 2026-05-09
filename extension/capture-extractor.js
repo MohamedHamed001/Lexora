@@ -28,17 +28,55 @@
     ];
   }
 
+  function isElementVisible(el) {
+    // The original code used `!!el.offsetParent`, which is unreliable for
+    // `position: fixed`, modern flex/grid layouts, and test environments
+    // where layout isn't computed (JSDOM). The audit asked us to replace it.
+    //
+    // Strategy: default to "visible" and only filter out elements we are
+    // *confident* are hidden, by checking computed style. This avoids
+    // dropping legitimate content in edge layouts.
+    if (!el || typeof window === 'undefined' || !window.getComputedStyle) return true;
+    try {
+      const cs = window.getComputedStyle(el);
+      if (!cs) return true;
+      if (cs.display === 'none') return false;
+      if (cs.visibility === 'hidden' || cs.visibility === 'collapse') return false;
+      return true;
+    } catch (_) {
+      return true;
+    }
+  }
+
   function collectHtmlBlocks(doc, seen = new Set()) {
     const allEls = Array.from(doc.querySelectorAll(contentSelectors().join(',')));
-    const leafEls = allEls.filter((el) =>
-      !allEls.some((other) => other !== el && el.contains(other))
-    );
+
+    // Single ancestor walk per element to identify "leaf" matches whose
+    // ancestors are also matches — we keep the leaves to avoid duplicating
+    // text that would appear from both a container (e.g. <article>) and its
+    // children (e.g. <p>). This is O(n*depth), not O(n^2).
+    const allElsSet = new Set(allEls);
+    const hasDescendant = new Set();
+    for (let i = allEls.length - 1; i >= 0; i--) {
+      let parent = allEls[i].parentElement;
+      while (parent) {
+        if (allElsSet.has(parent)) {
+          hasDescendant.add(parent);
+          break;
+        }
+        parent = parent.parentElement;
+      }
+    }
+    const leafEls = allEls.filter(el => !hasDescendant.has(el));
 
     const blocks = [];
     leafEls.forEach((el) => {
       if (el.closest('nav,button,header,footer,[role="navigation"]')) return;
-      const isVisible = !!el.offsetParent;
-      const txt = normalizeLine(isVisible ? el.innerText : el.textContent);
+      if (!isElementVisible(el)) return;
+      // Prefer innerText (rendered, layout-aware) when available; fall back
+      // to textContent (works in JSDOM and other layout-less DOMs).
+      const rawText = typeof el.innerText === 'string' ? el.innerText : el.textContent;
+      const txt = normalizeLine(rawText);
       if (txt.length > 10 && !seen.has(txt)) {
         seen.add(txt);
         blocks.push({ tag: el.tagName, text: txt });
@@ -85,18 +123,34 @@
     return doc.title.split(' - ')[0] || doc.title || 'Captured Page';
   }
 
+  function scoreContent({ htmlChars, pdfChars }) {
+    // Determine the dominant format and capturable status
+    const isPdfDominant = pdfChars >= 400 && pdfChars > htmlChars * 0.8;
+    const capturable = isPdfDominant ? pdfChars >= 400 : htmlChars >= 800;
+    const kind = isPdfDominant ? 'pdf' : (htmlChars >= 800 ? 'html' : 'unknown');
+
+    return {
+      capturable,
+      status: capturable ? 'ready' : 'not_ready',
+      kind,
+      reason: capturable ? 'Ready to capture.' : 'No strong text signal found yet (page may still be loading).',
+    };
+  }
+
   function extractPageContent(doc = global.document, loc = global.location) {
     if (!doc || !loc || isRestrictedProtocol(loc.protocol)) return null;
 
     const seen = new Set();
     const htmlFormatted = formatBlocks(collectHtmlBlocks(doc, seen));
     const pdfText = collectPdfText(doc, seen);
-    const content =
-      pdfText.length >= 400 && pdfText.length > htmlFormatted.length * 0.8
-        ? pdfText
-        : htmlFormatted;
+    
+    const htmlChars = htmlFormatted.length;
+    const pdfChars = pdfText.length;
+    const score = scoreContent({ htmlChars, pdfChars });
+    
+    const content = score.kind === 'pdf' ? pdfText : htmlFormatted;
 
-    if (!content || content.length < 80) {
+    if (!score.capturable || !content || content.length < 80) {
       const pdfUrl = findPdfUrl(doc);
       if (!pdfUrl) return null;
       return {
@@ -113,6 +167,13 @@
     };
   }
 
+  // Maximum blocks the probe will format. The probe only needs to know
+  // whether the page crosses the readiness threshold; capping keeps the work
+  // bounded on very large pages while still using the *same* measurement that
+  // extractPageContent uses, so probe and capture cannot disagree on
+  // borderline content.
+  const PROBE_BLOCK_CAP = 250;
+
   function probePageContent(doc = global.document, loc = global.location) {
     if (!doc || !loc || isRestrictedProtocol(loc.protocol)) {
       return { capturable: false, status: 'restricted', reason: 'Extension pages are not capturable.' };
@@ -120,23 +181,15 @@
 
     const pdfText = collectPdfText(doc);
     const blocks = collectHtmlBlocks(doc);
-    let htmlChars = 0;
-    for (const block of blocks.slice(0, 250)) {
-      htmlChars += block.text.length;
-      if (htmlChars > 2500) break;
-    }
-
+    const probedBlocks = blocks.length > PROBE_BLOCK_CAP ? blocks.slice(0, PROBE_BLOCK_CAP) : blocks;
+    const htmlChars = formatBlocks(probedBlocks).length;
     const pdfChars = pdfText.length;
-    const capturable = pdfChars >= 600 || htmlChars >= 800;
-    const kind = pdfChars >= 600 ? 'pdf' : (htmlChars >= 800 ? 'html' : 'unknown');
+    const score = scoreContent({ htmlChars, pdfChars });
 
     return {
-      capturable,
-      status: capturable ? 'ready' : 'not_ready',
-      kind,
+      ...score,
       pdfChars,
       htmlChars,
-      reason: capturable ? 'Ready to capture.' : 'No strong text signal found yet (page may still be loading).',
     };
   }
 

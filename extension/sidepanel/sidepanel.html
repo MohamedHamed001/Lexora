@@ -5,9 +5,6 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Lexora</title>
   <link rel="stylesheet" href="sidepanel.css">
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Manrope:wght@600;800&display=swap" rel="stylesheet">
 </head>
 <body>
 
@@ -151,6 +148,10 @@
         <div>
           <label style="font-size:0.75rem;color:var(--text-dim);display:block;margin-bottom:4px;">API Key (Bearer Auth, leave blank for local)</label>
           <input type="password" id="setting-key" class="settings-input" placeholder="sk-...">
+          <div style="display:flex; align-items:center; gap:6px; margin-top:6px;">
+            <input type="checkbox" id="setting-remember-key" style="accent-color:var(--primary-glow);width:14px;height:14px;">
+            <label for="setting-remember-key" style="font-size:0.75rem;color:var(--text-dim);">Remember Key</label>
+          </div>
         </div>
       </div>
 

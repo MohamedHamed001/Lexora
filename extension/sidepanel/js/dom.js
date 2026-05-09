@@ -1,5 +1,28 @@
 // ── DOM Elements ──────────────────────────────────────────────────────────
 
+/** Fail fast when sidepanel.html and dom ids drift (call once from sidepanel.js). */
+export function assertSidepanelDom() {
+  const required = [
+    'capture-btn',
+    'play-btn',
+    'prev-btn',
+    'next-btn',
+    'seek-bar',
+    'rate-slider',
+    'rate-label',
+    'voice-picker',
+    'tts-engine',
+    'content-container',
+    'chat-input',
+    'chat-messages',
+    'lesson-text',
+  ];
+  const missing = required.filter((id) => !document.getElementById(id));
+  if (missing.length) {
+    throw new Error(`Lexora: sidepanel missing required elements: ${missing.join(', ')}`);
+  }
+}
+
 export const dom = {
   // Capture
   captureBtn: document.getElementById('capture-btn'),
@@ -44,6 +67,7 @@ export const dom = {
   settingUrl: document.getElementById('setting-url'),
   settingModel: document.getElementById('setting-model'),
   settingKey: document.getElementById('setting-key'),
+  settingRememberKey: document.getElementById('setting-remember-key'),
   settingTheme: document.getElementById('setting-theme'),
   settingAutoCapture: document.getElementById('setting-autocapture'),
   statSessionWords: document.getElementById('stat-session-words'),

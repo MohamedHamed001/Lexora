@@ -16,12 +16,14 @@ describe('capture-extractor', () => {
   test('extracts readable article content without duplicating parent containers', async () => {
     const extractor = await loadExtractor();
     document.title = 'Test Lesson - Site';
+    const p1 = "This is a substantial paragraph with enough text to be captured by the extractor. ".repeat(6);
+    const p2 = "This second paragraph gives the capture enough volume and should only appear once. ".repeat(6);
     document.body.innerHTML = `
       <main>
         <article>
           <h1>Readable Lesson</h1>
-          <p>This is a substantial paragraph with enough text to be captured by the extractor.</p>
-          <p>This second paragraph gives the capture enough volume and should only appear once.</p>
+          <p>${p1}</p>
+          <p>${p2}</p>
         </article>
       </main>
       <footer>This footer should not be captured.</footer>
@@ -62,5 +64,24 @@ describe('capture-extractor', () => {
     expect(out.capturable).toBe(true);
     expect(out.status).toBe('ready');
     expect(out.kind).toBe('html');
+  });
+
+  test('probe and extract agree on html readiness for the same page', async () => {
+    const extractor = await loadExtractor();
+    // Borderline content sized close to the 800-char readiness threshold.
+    const body = Array.from({ length: 8 }, (_, i) => `<p>Borderline paragraph ${i} with measured content for readiness alignment checks.</p>`).join('');
+    document.body.innerHTML = `<article>${body}</article>`;
+
+    const probe = extractor.probePageContent(document, { protocol: 'https:', href: 'https://example.test/borderline' });
+    const extract = extractor.extractPageContent(document, { protocol: 'https:', href: 'https://example.test/borderline' });
+
+    if (probe.status === 'ready') {
+      expect(extract).not.toBeNull();
+      expect(extract.content.length).toBeGreaterThanOrEqual(80);
+    } else {
+      // When the probe says "not ready", the extractor must agree (returns
+      // null or a PDF-fallback shell, never a real HTML lesson).
+      expect(extract === null || /PDF detected/.test(extract.content)).toBe(true);
+    }
   });
 });

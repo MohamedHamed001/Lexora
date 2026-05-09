@@ -146,7 +146,7 @@ async function pump() {
 self.onmessage = (e) => {
   const d = e.data;
   if (d.type === "init") {
-    init(d.dtype, d.device).then(() => pump()).catch(() => {});
+    init(d.dtype, d.device).then(() => pump()).catch(err => log(`Init failed: ${err.message}`));
     return;
   }
   if (d.type === "cancel") {

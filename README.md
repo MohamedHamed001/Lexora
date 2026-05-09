@@ -272,7 +272,15 @@ Switch between **Kokoro** and **Piper** in the Audio tab's engine dropdown. The 
 
 ### Content Security Policy
 
-The extension requires `'wasm-unsafe-eval'` for ONNX Runtime WASM execution. This is scoped to extension pages only and does not affect the host page.
+The extension's `extension_pages` CSP is `script-src 'self' 'wasm-unsafe-eval'; object-src 'self'`.
+
+Why `'wasm-unsafe-eval'` is required: the local TTS engines (Kokoro, Piper) run via the ONNX Runtime, which compiles its WebAssembly module at runtime. Without `'wasm-unsafe-eval'`, `WebAssembly.compile()`/`instantiate()` is rejected by the CSP and neural TTS will not load. This relaxation is scoped to extension pages only; the host page's CSP is never modified, so it does not increase the attack surface of any visited site. We do **not** use `'unsafe-eval'` (no JavaScript `eval()`) and we do **not** load remote scripts.
+
+### Web-accessible resources
+
+The manifest exposes only `sidepanel/sidepanel.html` to host pages, because [extension/content.js](extension/content.js) mounts that page inside an iframe in the in-page overlay. All sidepanel JS, CSS, and helper modules are loaded transitively by that page from the extension origin and therefore do **not** need to be web-accessible. This minimizes the surface area for fingerprinting and keeps the trust boundary narrow.
+
+To prevent host pages from probing for Lexora at a stable `chrome-extension://<id>/...` URL, the Chrome manifest sets `"use_dynamic_url": true` on the web-accessible resource ([Chrome 130+](https://developer.chrome.com/docs/extensions/reference/manifest/web-accessible-resources)). The extension URL is regenerated per browser session, and content scripts always resolve it through `chrome.runtime.getURL()` so the iframe still loads correctly. Firefox does not yet support this flag, so the Firefox build retains the static URL.
 
 ### Chat proxy behavior
 
@@ -281,7 +289,24 @@ Chat requests are made from the sidepanel to the service worker using `proxyFetc
 - The service worker **only** forwards requests to the configured endpoint origin (or localhost fallback).
 - Only **POST** is allowed.
 - Only a small allowlist of headers is forwarded.
-- On failure, the proxy returns **HTTP metadata** (status code, content-type, capped text snippet) to make debugging easier without exposing sensitive response bodies.
+- The body is JSON, capped at 250 KB.
+- On failure, the proxy returns metadata (status code, content-type) and a sanitized error message. Raw response snippets are gated behind `globalThis.DEBUG` and are off by default to avoid leaking server-side details.
+
+### Prompt-injection hardening
+
+When chatting, captured page content is treated as **untrusted data**. The system prompt:
+
+1. Wraps the lesson text inside unique fence tokens (`<<<LEXORA_SOURCE_START>>>` / `<<<LEXORA_SOURCE_END>>>`).
+2. Strips any literal occurrence of those tokens from the captured text so a hostile page cannot forge a closing fence.
+3. Instructs the model to ignore directives, role changes, or tool calls embedded inside the SOURCE CONTENT.
+
+### API key persistence
+
+By default, the chat API key is kept in `chrome.storage.session` (cleared when the browser closes). The "Remember Key" checkbox opts into persisting it to `chrome.storage.local`.
+
+### Dev-tooling CVEs
+
+`npm audit` is clean as of vitest 4.x. Earlier 2.x lines pulled in transitively-vulnerable `esbuild`/`vite` versions; those advisories applied to the dev server only and never shipped in the extension bundle. We track this surface to keep `npm audit` green.
 
 ---
 
@@ -367,7 +392,7 @@ Use `BUGS.md` as the lightweight bug log. Each entry should include:
   - DOM-safe markdown rendering helpers
 - **E2E**: `npm run test:e2e` runs a Playwright **extension smoke test**.
 
-Note: two “real flow” Playwright tests exist (`extension/e2e/lexora-flows.spec.js`) but are currently marked `test.skip` due to MV3 service worker + focus/timing flakiness in this environment.
+CI runs the full Playwright suite under `xvfb` (see `.github/workflows/ci.yml`), including the deep-capture and selected-text flows in `extension/e2e/lexora-flows.spec.js`.
 
 ---
 

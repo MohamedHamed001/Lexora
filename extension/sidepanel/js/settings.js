@@ -1,8 +1,32 @@
 import { state } from './state.js';
 import { dom } from './dom.js';
 import { applyLesson } from './ui.js';
+import { debugLog } from './messaging.js';
 
-export function initSettings() {
+let audioCtrl = null;
+
+// Sensitive fields that must never leak into `storage.local` unless the user
+// has explicitly opted in to persisting them (rememberKey).
+const SENSITIVE_KEYS = ['key', 'ttsKey'];
+
+/**
+ * Produce a sanitized copy of `config` safe for `storage.local`. When
+ * `rememberKey` is false, all sensitive credentials are stripped — protecting
+ * users who chose session-only secrets from incidental writes (e.g. toggling
+ * the TTS engine) re-persisting the in-memory key.
+ *
+ * Pure function: exported for unit tests.
+ */
+export function buildPersistedConfig(config, rememberKey) {
+  const out = { ...(config || {}) };
+  if (!rememberKey) {
+    for (const k of SENSITIVE_KEYS) delete out[k];
+  }
+  return out;
+}
+
+export function initSettings({ audio }) {
+  audioCtrl = audio;
   if (!state.browserAPI) return;
   const K = (globalThis.LexoraStorage && LexoraStorage.KEYS) || {
     CURRENT_LESSON: 'currentLesson',
@@ -10,6 +34,15 @@ export function initSettings() {
     STATS: 'lexoraStats',
     AUTO_PLAY_SELECTED_TEXT: 'autoPlaySelectedText',
   };
+
+  // Closure-scoped flag tracking the user's "remember key" preference. Updated
+  // on initial load + Save; consulted by every config persistence path.
+  let rememberKey = false;
+
+  function persistConfig() {
+    const payload = buildPersistedConfig(state.config, rememberKey);
+    state.browserAPI.storage.local.set({ [K.CONFIG]: payload });
+  }
 
   function safeUrlToOriginPattern(url) {
     try {
@@ -44,7 +77,8 @@ export function initSettings() {
         const tabs = await api.tabs.query({ active: true, currentWindow: true });
         const url = tabs && tabs[0] && tabs[0].url ? tabs[0].url : '';
         return safeUrlToOriginPattern(url);
-      } catch (_) {
+      } catch (err) {
+        debugLog('Settings', 'tabs.query for active origin failed', err);
         return null;
       }
     }
@@ -60,7 +94,8 @@ export function initSettings() {
           origins: [originPat],
         });
         if (!ok) return false;
-      } catch (_) {
+      } catch (err) {
+        debugLog('Settings', 'webNavigation permission request failed', err);
         return false;
       }
     }
@@ -74,7 +109,8 @@ export function initSettings() {
       try {
         const ok = await api.permissions.request({ origins });
         if (!ok) return false;
-      } catch (_) {
+      } catch (err) {
+        debugLog('Settings', 'host permission request failed', err);
         return false;
       }
     }
@@ -82,23 +118,50 @@ export function initSettings() {
     return true;
   }
 
-  state.browserAPI.storage.local.get([K.CURRENT_LESSON, K.CONFIG, K.STATS, K.AUTO_PLAY_SELECTED_TEXT], res => {
-    if (res[K.CURRENT_LESSON]) {
-      state.currentLesson = res[K.CURRENT_LESSON];
-      applyLesson(state.currentLesson);
+  const getSessionKey = () => new Promise(resolve => {
+    if (state.browserAPI.storage.session) {
+      state.browserAPI.storage.session.get(['lexoraConfigKey'], res => resolve(res?.lexoraConfigKey));
+    } else {
+      resolve(null);
     }
-    if (res[K.CONFIG]) {
-      // Keep object identity stable (sidepanel.js holds a reference).
-      Object.assign(state.config, res[K.CONFIG]);
-      // Cloud TTS feature was removed — ensure we don't keep stale secrets.
-      delete state.config.ttsKey;
-      delete state.config.aiCleanupOnCapture;
+  });
+
+  const saveSessionKey = (key) => new Promise(resolve => {
+    if (state.browserAPI.storage.session) {
+      if (key) state.browserAPI.storage.session.set({ lexoraConfigKey: key }, resolve);
+      else state.browserAPI.storage.session.remove(['lexoraConfigKey'], resolve);
+    } else {
+      resolve();
     }
-    if (state.config.kokoroDtype !== 'q4' && state.config.kokoroDtype !== 'q8') state.config.kokoroDtype = 'q8';
-    if (dom.settingUrl) dom.settingUrl.value = state.config.url || '';
-    if (dom.settingModel) dom.settingModel.value = state.config.model || '';
-    if (dom.settingKey) dom.settingKey.value = state.config.key || '';
-    if (dom.settingTheme) {
+  });
+
+  getSessionKey().then(sessionKey => {
+    state.browserAPI.storage.local.get([K.CURRENT_LESSON, K.CONFIG, K.STATS, K.AUTO_PLAY_SELECTED_TEXT], res => {
+      if (res[K.CURRENT_LESSON]) {
+        state.currentLesson = res[K.CURRENT_LESSON];
+        applyLesson(state.currentLesson);
+      }
+      let rememberedKey = false;
+      if (res[K.CONFIG]) {
+        // Keep object identity stable (sidepanel.js holds a reference).
+        Object.assign(state.config, res[K.CONFIG]);
+        // Cloud TTS feature was removed — ensure we don't keep stale secrets.
+        delete state.config.ttsKey;
+        delete state.config.aiCleanupOnCapture;
+        rememberedKey = !!state.config.key;
+      }
+      rememberKey = rememberedKey;
+
+      if (sessionKey && !rememberedKey) {
+        state.config.key = sessionKey;
+      }
+
+      if (state.config.kokoroDtype !== 'q4' && state.config.kokoroDtype !== 'q8') state.config.kokoroDtype = 'q8';
+      if (dom.settingUrl) dom.settingUrl.value = state.config.url || '';
+      if (dom.settingModel) dom.settingModel.value = state.config.model || '';
+      if (dom.settingKey) dom.settingKey.value = state.config.key || '';
+      if (dom.settingRememberKey) dom.settingRememberKey.checked = rememberedKey;
+      if (dom.settingTheme) {
       dom.settingTheme.checked = state.config.theme === 'light';
       if (state.config.theme === 'light') {
         document.body.classList.add('theme-light');
@@ -119,8 +182,8 @@ export function initSettings() {
     if (dom.ttsEngineSelect) dom.ttsEngineSelect.value = state.config.ttsEngine || 'kokoro';
     if (dom.kokoroDtypeSelect) dom.kokoroDtypeSelect.value = state.config.kokoroDtype || 'q8';
     
-    if (window.lexoraAudio) window.lexoraAudio.updateKokoroDtypeRowVisibility();
-    if (window.lexoraAudio) window.lexoraAudio.initVoice();
+    if (audioCtrl) audioCtrl.updateKokoroDtypeRowVisibility();
+    if (audioCtrl) audioCtrl.initVoice();
 
     if (res[K.AUTO_PLAY_SELECTED_TEXT] && state.currentLesson && state.currentLesson.title === 'Selected Text') {
       // Clear the one-shot flag.
@@ -129,10 +192,11 @@ export function initSettings() {
       // Switch to Audio tab and start playback.
       const audioTab = document.querySelector('.tab[data-tab="audio"]');
       if (audioTab) audioTab.click();
-      if (window.lexoraAudio && typeof window.lexoraAudio.startPlayback === 'function') {
-        window.lexoraAudio.startPlayback();
+      if (audioCtrl && typeof audioCtrl.startPlayback === 'function') {
+        audioCtrl.startPlayback();
       }
     }
+  });
   });
 
   // If the sidepanel is already open, Selected Text "Read" updates storage but doesn't reload the panel.
@@ -154,8 +218,8 @@ export function initSettings() {
 
     const audioTab = document.querySelector('.tab[data-tab="audio"]');
     if (audioTab) audioTab.click();
-    if (window.lexoraAudio && typeof window.lexoraAudio.startPlayback === 'function') {
-      window.lexoraAudio.startPlayback();
+    if (audioCtrl && typeof audioCtrl.startPlayback === 'function') {
+      audioCtrl.startPlayback();
     }
   });
 
@@ -163,16 +227,19 @@ export function initSettings() {
     dom.saveSettingsBtn.addEventListener('click', () => {
       state.config.url = dom.settingUrl.value.trim();
       state.config.model = dom.settingModel.value.trim();
-      state.config.key = dom.settingKey.value.trim();
+      const userKey = dom.settingKey.value.trim();
+      rememberKey = dom.settingRememberKey ? dom.settingRememberKey.checked : false;
+      state.config.key = userKey;
+
       state.config.theme = dom.settingTheme.checked ? 'light' : 'dark';
       state.config.autoCapture = dom.settingAutoCapture ? dom.settingAutoCapture.checked : false;
-      
+
       if (state.config.theme === 'light') {
         document.body.classList.add('theme-light');
       } else {
         document.body.classList.remove('theme-light');
       }
-      
+
       (async () => {
         const ok = await ensureOptionalPermissionsForConfig(state.config);
         if (!ok) {
@@ -183,10 +250,13 @@ export function initSettings() {
           }
         }
 
-        state.browserAPI.storage.local.set({ lexoraConfig: state.config }, () => {
+        await saveSessionKey(rememberKey ? null : userKey);
+
+        const payload = buildPersistedConfig(state.config, rememberKey);
+        state.browserAPI.storage.local.set({ [K.CONFIG]: payload }, () => {
           if (dom.settingsStatus) {
             dom.settingsStatus.textContent = ok ? '✅ Config Saved' : '✅ Config Saved (limited)';
-            if (window.lexoraAudio) window.lexoraAudio.initVoice();
+            if (audioCtrl) audioCtrl.initVoice();
             setTimeout(() => { dom.settingsStatus.textContent = ''; }, 2000);
           }
         });
@@ -198,13 +268,12 @@ export function initSettings() {
     dom.ttsEngineSelect.addEventListener('change', () => {
       const nextEngine = dom.ttsEngineSelect.value === 'piper' ? 'piper' : 'kokoro';
       state.config.ttsEngine = nextEngine;
-      if (window.lexoraAudio) window.lexoraAudio.cancelAudio(true);
-      if (window.lexoraAudio) window.lexoraAudio.showDownloadProgress(false);
-      
-      // Note: KOKORO_VOICE_META will be imported or managed in audio.js
-      if (window.lexoraAudio) window.lexoraAudio.updateKokoroDtypeRowVisibility();
-      state.browserAPI.storage.local.set({ lexoraConfig: state.config });
-      if (window.lexoraAudio) window.lexoraAudio.initVoice(); // re-init voice when engine changes
+      if (audioCtrl) audioCtrl.cancelAudio(true);
+      if (audioCtrl) audioCtrl.showDownloadProgress(false);
+
+      if (audioCtrl) audioCtrl.updateKokoroDtypeRowVisibility();
+      persistConfig();
+      if (audioCtrl) audioCtrl.initVoice(); // re-init voice when engine changes
     });
   }
 
@@ -213,8 +282,8 @@ export function initSettings() {
       const next = dom.kokoroDtypeSelect.value === 'q4' ? 'q4' : 'q8';
       if (next === state.config.kokoroDtype) return;
       state.config.kokoroDtype = next;
-      if (window.lexoraAudio) window.lexoraAudio.disposeKokoroWorkers();
-      state.browserAPI.storage.local.set({ lexoraConfig: state.config });
+      if (audioCtrl) audioCtrl.disposeKokoroWorkers();
+      persistConfig();
     });
   }
 }
@@ -235,12 +304,14 @@ export function addStats(words, timeMs) {
   state.stats.allTime.wordsRead += w;
   state.stats.allTime.timeListened += t;
   
-  // Save allTime stats
+  // Save allTime stats (best effort; UI is updated unconditionally below)
   try {
     state.browserAPI?.storage?.local?.set?.({
       lexoraStats: { allTime: state.stats.allTime }
     });
-  } catch (_) {}
+  } catch (err) {
+    debugLog('Stats', 'Persisting allTime stats failed', err);
+  }
   updateStatsUI();
 }
 

@@ -13,37 +13,6 @@ export const state = {
   },
   chatHistory: [],
   
-  // TTS State
-  speaking: false,
-  isPaused: false,
-  sentences: [],
-  sentenceIdx: 0,
-  
-  // Audio state
-  currentAudioElement: null,
-  
-  // For web speech fallback
-  sysUtteranceDurationEst: 0,
-  sysUtteranceT0: 0,
-  sysUtteranceHighlight: false,
-  currentChunkText: null,
-  currentChunkWords: [],
-  lastHighlightedWord: -1,
-  
-  // Worker states
-  piperWorkers: [],
-  piperAudioCache: new Map(),
-  piperSynthCompletedCount: 0,
-  piperSynthTotalCount: 0,
-  
-  kokoroWorkers: [],
-  audioCache: new Map(),
-  synthCompletedCount: 0,
-  synthTotalCount: 0,
-  
-  // Google Voice
-  googleVoice: null,
-  
   // Browser Extension API abstraction
   browserAPI: (typeof chrome !== 'undefined' && chrome?.runtime?.getURL ? chrome : null) ||
               (typeof browser !== 'undefined' && browser?.runtime?.getURL ? browser : null),

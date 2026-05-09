@@ -1,39 +1,42 @@
 {
   "manifest_version": 3,
   "name": "Lexora",
-  "version": "1.7.0",
+  "version": "1.8.0",
   "description": "AI-powered study companion for any page.",
   "permissions": [
     "activeTab",
     "scripting",
     "storage",
-    "tabs"
+    "tabs",
+    "sidePanel"
   ],
   "optional_permissions": ["permissions", "webNavigation"],
   "optional_host_permissions": ["http://*/*", "https://*/*"],
   "background": {
     "service_worker": "background.js"
   },
+  "side_panel": {
+    "default_path": "sidepanel/sidepanel.html"
+  },
   "action": {
     "default_title": "AI-Study Companion",
     "default_icon": {
       "48": "icons/icon48.png",
-      "128": "icons/icon48.png"
+      "128": "icons/icon128.png"
     }
   },
   "icons": {
     "48": "icons/icon48.png",
-    "128": "icons/icon48.png"
+    "128": "icons/icon128.png"
   },
   "content_security_policy": {
     "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'"
   },
   "web_accessible_resources": [
     {
-      "resources": [
-        "sidepanel/sidepanel.html"
-      ],
-      "matches": ["http://*/*", "https://*/*"]
+      "resources": ["sidepanel/sidepanel.html"],
+      "matches": ["http://*/*", "https://*/*"],
+      "use_dynamic_url": true
     }
   ],
   "browser_specific_settings": {
@@ -48,6 +51,6 @@
   "sidebar_action": {
     "default_panel": "sidepanel/sidepanel.html",
     "default_title": "Lexora Study Companion",
-    "default_icon": "icons/icon48.png"
+    "default_icon": "icons/icon128.png"
   }
 }

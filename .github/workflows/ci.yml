@@ -13,7 +13,44 @@ jobs:
         with:
           node-version: 20
           cache: npm
-      - run: npm install
+      - run: npm ci
       - run: npm run lint
       - run: npm test
+      # Fail only on high+ vulnerabilities. Moderate dev-tooling advisories are
+      # tracked in the README under "Security" and are not shipped to users.
+      - name: npm audit (high+)
+        run: npm audit --audit-level=high
 
+  e2e-smoke:
+    runs-on: ubuntu-latest
+    needs: lint-and-test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      # Chromium needs system deps + Xvfb to load an unpacked extension.
+      - name: Install Playwright browsers + system deps
+        run: npx playwright install --with-deps chromium
+      # Runs every spec under extension/e2e/ (smoke + lexora-flows). The flow
+      # specs cover deep capture and the selected-text auto-play storage path,
+      # both called out in the audit as high-value behaviors to enforce in CI.
+      - name: Run extension Playwright suite under xvfb
+        run: xvfb-run -a npx playwright test
+
+  build-firefox:
+    runs-on: ubuntu-latest
+    needs: lint-and-test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - name: Build Firefox extension artifact
+        run: npm run build:firefox
+      - name: Verify Firefox manifest parses
+        run: node -e "const fs=require('fs');const p='dist/extension-firefox/manifest.json';JSON.parse(fs.readFileSync(p,'utf8'));if(!fs.existsSync('dist/extension-firefox/icons/icon128.png'))process.exit(1);"

@@ -1,3 +1,5 @@
+import { debugLog } from './messaging.js';
+
 export async function loadReadingProgressForLesson(browserAPI, lesson) {
   if (!browserAPI?.storage?.local?.get) return null;
   if (!lesson?.url || lesson?.title === 'Selected Text') return null;
@@ -15,7 +17,8 @@ export async function loadReadingProgressForLesson(browserAPI, lesson) {
   const res = await new Promise((resolve) => {
     try {
       browserAPI.storage.local.get(keys, (r) => resolve(r || {}));
-    } catch (_) {
+    } catch (err) {
+      debugLog('Progress', 'storage.local.get failed', err);
       resolve({});
     }
   });
@@ -29,13 +32,16 @@ export async function loadReadingProgressForLesson(browserAPI, lesson) {
 
   if (v === undefined) return null;
 
-  // One-way migrate legacy keys if needed.
+  // One-way migrate legacy keys if needed. Best effort; if it fails we keep
+  // both keys and try again next read.
   if (legacyKey && res[progressKey] === undefined && res[legacyKey] !== undefined) {
     try {
       browserAPI.storage.local.set({ [progressKey]: v }, () => {
         browserAPI.storage.local.remove([legacyKey], () => {});
       });
-    } catch (_) {}
+    } catch (err) {
+      debugLog('Progress', 'legacy progress migration failed', err);
+    }
   }
 
   return v;
@@ -64,8 +70,12 @@ export function saveReadingProgressForLesson(browserAPI, lesson, sentenceIdx) {
             .concat(prev.filter((e) => e && e.k !== progressKey).slice(0, 199));
           browserAPI.storage.local.set({ [indexKey]: next });
         });
-      } catch (_) {}
+      } catch (err) {
+        debugLog('Progress', 'progress index update failed', err);
+      }
     });
-  } catch (_) {}
+  } catch (err) {
+    debugLog('Progress', 'saveReadingProgressForLesson failed', err);
+  }
 }
 

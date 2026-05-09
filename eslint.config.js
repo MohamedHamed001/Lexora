@@ -47,6 +47,8 @@ export default [
         Worker: "readonly",
         Audio: "readonly",
         Blob: "readonly",
+        Event: "readonly",
+        CustomEvent: "readonly",
         SpeechSynthesisUtterance: "readonly",
         NodeFilter: "readonly",
         MutationObserver: "readonly",

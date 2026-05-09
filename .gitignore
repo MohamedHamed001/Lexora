@@ -17,6 +17,8 @@ course_content.pdf
 .DS_Store
 analysis_results.md
 bugs.md
+.cache/
+.claude/
 
 # Extension specific
 *.log

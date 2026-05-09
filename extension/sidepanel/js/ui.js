@@ -8,6 +8,8 @@ const K = (globalThis.LexoraStorage && LexoraStorage.KEYS) || {
   AUTO_PLAY_SELECTED_TEXT: 'autoPlaySelectedText',
 };
 
+let audioCtrl = null;
+
 function showNoSupportedContent(message) {
   const msg = (message || 'No content found on this page.').trim();
 
@@ -44,7 +46,8 @@ function showNoSupportedContent(message) {
   if (contentTab) contentTab.click();
 }
 
-export function initUI() {
+export function initUI({ audio }) {
+  audioCtrl = audio;
   // ── Tab switching ──────────────────────────────────────────────────────────
   document.querySelectorAll('.tab').forEach(tab => {
     tab.onclick = () => {
@@ -218,8 +221,8 @@ export function initUI() {
        const audioTab = document.querySelector('.tab[data-tab="audio"]');
        if (audioTab) audioTab.click();
 
-       if (window.lexoraAudio && typeof window.lexoraAudio.startPlayback === 'function') {
-         window.lexoraAudio.startPlayback();
+       if (audioCtrl && typeof audioCtrl.startPlayback === 'function') {
+         audioCtrl.startPlayback();
        }
     }
   });
@@ -294,8 +297,8 @@ export function initUI() {
 export function applyLesson(lesson) {
   if (!lesson) return;
 
-  if (window.lexoraAudio && typeof window.lexoraAudio.resetNarrationForNewLesson === 'function') {
-    window.lexoraAudio.resetNarrationForNewLesson();
+  if (audioCtrl && typeof audioCtrl.resetNarrationForNewLesson === 'function') {
+    audioCtrl.resetNarrationForNewLesson();
   }
 
   if (dom.urlEl) {

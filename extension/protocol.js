@@ -61,6 +61,10 @@
     return isObject(msg) && msg.action === ACTIONS.CLEAR_HIGHLIGHT;
   }
 
+  function isAutoCaptureSaveRequest(msg) {
+    return isObject(msg) && msg.action === ACTIONS.AUTO_CAPTURE_SAVE && msg.data != null;
+  }
+
   global.LexoraProtocol = Object.freeze({
     ACTIONS,
     isObject,
@@ -70,5 +74,6 @@
     isTextSelectionRequest,
     isHighlightWordRequest,
     isClearHighlightRequest,
+    isAutoCaptureSaveRequest,
   });
 })(typeof globalThis !== 'undefined' ? globalThis : self);

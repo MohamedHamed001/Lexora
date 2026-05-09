@@ -1,11 +1,15 @@
 // background.js
-try {
+// Chrome MV3 runs background.js in a service worker (importScripts available).
+// Firefox MV3 loads background.scripts in order as an event page (no importScripts).
+// In Firefox, the helpers below are already attached to globalThis by the
+// preceding manifest entries, so we only call importScripts when it exists.
+if (typeof importScripts === 'function') {
+  importScripts('debug-log.js');
   importScripts('protocol.js');
+  importScripts('message-guards.js');
   importScripts('storage.js');
   importScripts('capture-extractor.js');
   importScripts('capture-clean.js');
-} catch (_) {
-  // Some browsers load SW dependencies differently; keep the SW resilient.
 }
 
 const browserAPI =
@@ -15,6 +19,22 @@ const browserAPI =
 if (!browserAPI) {
   throw new Error('Extension runtime API not found (chrome.runtime/browser.runtime missing)');
 }
+
+// Pull action constants from the shared protocol module so we never hard-code
+// strings here. Falls back to literal strings only if protocol.js failed to load.
+const ACTIONS = (globalThis.LexoraProtocol && LexoraProtocol.ACTIONS) || {
+  PROXY_FETCH: 'proxyFetch',
+  HIGHLIGHT_WORD: 'highlightWord',
+  CLEAR_HIGHLIGHT: 'clearHighlight',
+  CAPTURE_TEXT: 'captureText',
+  ASK_AI_ABOUT_TEXT: 'askAiAboutText',
+  TRIGGER_DEEP_CAPTURE: 'triggerDeepCapture',
+  PROBE_CAPTURABLE: 'probeCapturable',
+  AUTO_CAPTURE_SAVE: 'autoCaptureSave',
+  SET_HIGHLIGHT_ANCHOR: 'setHighlightAnchor',
+  CAPTURE_FINISHED: 'captureFinished',
+  TOGGLE_OVERLAY: 'toggleOverlay',
+};
 
 // ── Config cache (avoid async storage lookups per request) ──────────────────
 const EXTENSION_ORIGIN = (() => {
@@ -81,7 +101,11 @@ function pickAllowedHeaders(h) {
 }
 
 function handleProxyFetch(request, sender, sendResponse) {
-    if (globalThis.LexoraProtocol && !LexoraProtocol.isProxyFetchRequest(request)) {
+    if (!globalThis.LexoraProtocol || typeof LexoraProtocol.isProxyFetchRequest !== 'function') {
+      sendResponse({ success: false, error: 'Protocol unavailable.' });
+      return false;
+    }
+    if (!LexoraProtocol.isProxyFetchRequest(request)) {
       sendResponse({ success: false, error: 'Invalid proxy request.' });
       return false;
     }
@@ -145,7 +169,6 @@ function handleProxyFetch(request, sender, sendResponse) {
         } catch (_) {}
 
         if (!r.ok) {
-          const snippet = (text || '').slice(0, 800);
           const error =
             (jsonOk && data && (data.error?.message || data.message)) ||
             `HTTP ${r.status}`;
@@ -154,8 +177,8 @@ function handleProxyFetch(request, sender, sendResponse) {
               ok: false,
               status: r.status,
               contentType,
-              snippet,
               data: jsonOk ? data : null,
+              __debugSnippet: (globalThis.DEBUG ? (text || '').slice(0, 800) : undefined),
             },
           });
         }
@@ -166,7 +189,7 @@ function handleProxyFetch(request, sender, sendResponse) {
               ok: true,
               status: r.status,
               contentType,
-              snippet: (text || '').slice(0, 800),
+              __debugSnippet: (globalThis.DEBUG ? (text || '').slice(0, 800) : undefined),
             },
           });
         }
@@ -182,56 +205,60 @@ function handleProxyFetch(request, sender, sendResponse) {
 }
 
 function handleHighlightRelay(request) {
-    if (globalThis.LexoraProtocol) {
-      const ok =
-        request.action === LexoraProtocol.ACTIONS.HIGHLIGHT_WORD
-          ? LexoraProtocol.isHighlightWordRequest(request)
-          : LexoraProtocol.isClearHighlightRequest(request);
-      if (!ok) return false;
-    }
+    if (!globalThis.LexoraProtocol) return false;
+    const ok =
+      request.action === LexoraProtocol.ACTIONS.HIGHLIGHT_WORD
+        ? LexoraProtocol.isHighlightWordRequest(request)
+        : LexoraProtocol.isClearHighlightRequest(request);
+    if (!ok) return false;
     browserAPI.tabs.query({ active: true, currentWindow: true }, tabs => {
       const tab = tabs[0];
       if (!tab) return;
       // If optional `webNavigation` permission isn't granted, fall back to top frame only.
       if (!browserAPI.webNavigation || typeof browserAPI.webNavigation.getAllFrames !== 'function') {
-        browserAPI.tabs.sendMessage(tab.id, request).catch(() => {});
+        globalThis.sendMessageSafe(browserAPI, tab.id, request);
         return;
       }
       try {
         browserAPI.webNavigation.getAllFrames({ tabId: tab.id }, frames => {
           if (!frames) {
-            browserAPI.tabs.sendMessage(tab.id, request).catch(() => {});
+            globalThis.sendMessageSafe(browserAPI, tab.id, request);
             return;
           }
           for (const frame of frames) {
-            browserAPI.tabs.sendMessage(tab.id, request, { frameId: frame.frameId }).catch(() => {});
+            globalThis.sendMessageSafe(browserAPI, tab.id, request, { frameId: frame.frameId });
           }
         });
       } catch (_) {
-        browserAPI.tabs.sendMessage(tab.id, request).catch(() => {});
+        globalThis.sendMessageSafe(browserAPI, tab.id, request);
       }
     });
     return false;
 }
 
 function handleSelectionActions(request, sender) {
-    if (globalThis.LexoraProtocol && !LexoraProtocol.isTextSelectionRequest(request)) return false;
-    if (typeof request.text !== 'string' || !request.text.trim()) return false;
+    if (!globalThis.LexoraProtocol || !LexoraProtocol.isTextSelectionRequest(request)) return false;
+    const G = globalThis.LexoraMessageGuards;
+    if (!G || !G.isTrustedSelectionSender(sender, browserAPI.runtime?.id)) return false;
+
+    const text = G.clampSelectionText(request.text);
+    if (!text) return false;
+
     // If it's just reading, we create a pseudo-lesson
-    if (request.action === 'captureText') {
+    if (request.action === ACTIONS.CAPTURE_TEXT) {
       if (!sender?.tab?.id) return false;
       const pseudoLesson = {
         title: 'Selected Text',
-        content: request.text.trim(),
-        url: sender.tab ? sender.tab.url : ''
+        content: text,
+        url: typeof sender.tab.url === 'string' ? sender.tab.url : '',
       };
       browserAPI.storage.local.set({ currentLesson: pseudoLesson, autoPlaySelectedText: true });
-
-      browserAPI.tabs.sendMessage(sender.tab.id, { action: 'setHighlightAnchor', text: request.text.trim() }).catch(() => {});
+      globalThis.sendMessageSafe(browserAPI, sender.tab.id, { action: ACTIONS.SET_HIGHLIGHT_ANCHOR, text });
+      return;
     }
-    
-    // Broadcast to sidepanel so it can update its UI or fill the chat
-    browserAPI.runtime.sendMessage(request).catch(() => {});
+
+    // askAiAboutText — same trust + size limits as captureText
+    globalThis.sendRuntimeMessageSafe(browserAPI, { ...request, text });
     return false;
 }
 
@@ -240,7 +267,7 @@ function handleTriggerDeepCapture(request, sendResponse) {
   const respondOnce = (payload) => {
     if (responded) return;
     responded = true;
-    try { sendResponse(payload); } catch (_) {}
+    try { sendResponse(payload); } catch (e) { globalThis.debugLog('Capture', 'Response error', e); }
   };
   // Hard timeout: never leave UI hanging (MV3 SW + permissions can fail silently).
   const timeoutId = setTimeout(() => {
@@ -271,6 +298,7 @@ function handleTriggerDeepCapture(request, sendResponse) {
             });
           } catch (e) {
             clearTimeout(timeoutId);
+            globalThis.debugLog('Capture', `Extraction failed: ${e.message}`, e);
             respondOnce({ success: false, error: e?.message || 'Capture failed.' });
             return;
           }
@@ -283,7 +311,7 @@ function handleTriggerDeepCapture(request, sendResponse) {
             if (!valid.length) {
               clearTimeout(timeoutId);
               respondOnce({ success: false, error: 'No content found on this page.' });
-              browserAPI.tabs.sendMessage(tabId, { action: 'captureFinished', success: false });
+              globalThis.sendMessageSafe(browserAPI, tabId, { action: ACTIONS.CAPTURE_FINISHED, success: false });
               return;
             }
 
@@ -293,9 +321,9 @@ function handleTriggerDeepCapture(request, sendResponse) {
             browserAPI.storage.local.set({ currentLesson: best });
             clearTimeout(timeoutId);
             respondOnce({ success: true, data: best });
-            browserAPI.tabs.sendMessage(tabId, { action: 'captureFinished', success: true });
+            globalThis.sendMessageSafe(browserAPI, tabId, { action: ACTIONS.CAPTURE_FINISHED, success: true });
           } catch (_e) {
-            // Never leave the UI hanging: fall back to raw capture if anything goes wrong.
+            globalThis.debugLog('Capture', 'Failed to store lesson', _e);
             try {
               const fallback = (results || [])
                 .map(r => r.result)
@@ -306,20 +334,23 @@ function handleTriggerDeepCapture(request, sendResponse) {
                 browserAPI.storage.local.set({ currentLesson: polished });
                 clearTimeout(timeoutId);
                 respondOnce({ success: true, data: polished });
-                browserAPI.tabs.sendMessage(tabId, { action: 'captureFinished', success: true });
+                globalThis.sendMessageSafe(browserAPI, tabId, { action: ACTIONS.CAPTURE_FINISHED, success: true });
               } else {
                 clearTimeout(timeoutId);
+                globalThis.debugLog('Capture', `Extraction failed: ${_e.message}`, _e);
                 respondOnce({ success: false, error: _e?.message || 'Capture failed' });
-                browserAPI.tabs.sendMessage(tabId, { action: 'captureFinished', success: false });
+                globalThis.sendMessageSafe(browserAPI, tabId, { action: ACTIONS.CAPTURE_FINISHED, success: false });
               }
-            } catch (_) {
+            } catch (e) {
               clearTimeout(timeoutId);
-              respondOnce({ success: false, error: _e?.message || 'Capture failed' });
+              globalThis.debugLog('Capture', `Fatal capture error: ${e.message}`, e);
+              respondOnce({ success: false, error: e?.message || 'Capture failed' });
             }
           }
         })();
       } catch (e) {
         clearTimeout(timeoutId);
+        globalThis.debugLog('Capture', `Script error: ${e.message}`, e);
         respondOnce({ success: false, error: e?.message || 'Capture failed' });
       }
     };
@@ -403,8 +434,9 @@ function handleProbeCapturable(request, sendResponse) {
             } else {
               sendResponse({ success: true, capturable: false, status: 'not_ready', reason: 'No readable content detected.' });
             }
-          } catch (_e) {
-            sendResponse({ success: true, capturable: false, status: 'not_ready', reason: _e?.message || 'Probe failed.' });
+          } catch (e) {
+            globalThis.debugLog('Probe', 'Probe error', e);
+            sendResponse({ success: true, capturable: false, status: 'not_ready', reason: e?.message || 'Probe failed.' });
           }
         }
       );
@@ -415,13 +447,16 @@ function handleProbeCapturable(request, sendResponse) {
 }
 
 function handleAutoCaptureSave(request) {
-  if (request.data) {
-    try {
-      const polished = cleanCapturedLessonNonAi(request.data);
-      browserAPI.storage.local.set({ currentLesson: polished });
-    } catch (_e) {
-      browserAPI.storage.local.set({ currentLesson: request.data });
-    }
+  if (!globalThis.LexoraProtocol || !LexoraProtocol.isAutoCaptureSaveRequest(request)) return false;
+  const G = globalThis.LexoraMessageGuards;
+  const lesson = G && G.normalizeAutoCaptureLesson ? G.normalizeAutoCaptureLesson(request.data) : null;
+  if (!lesson) return false;
+  try {
+    const polished = cleanCapturedLessonNonAi(lesson);
+    browserAPI.storage.local.set({ currentLesson: polished });
+  } catch (e) {
+    globalThis.debugLog('Capture', 'Failed to polish capture', e);
+    browserAPI.storage.local.set({ currentLesson: lesson });
   }
   return false;
 }
@@ -432,22 +467,21 @@ browserAPI.runtime.onMessage.addListener((request, sender, sendResponse) => {
     (request && typeof request.action === 'string' ? request.action : null);
 
   switch (action) {
-    case 'proxyFetch':
+    case ACTIONS.PROXY_FETCH:
       return handleProxyFetch(request, sender, sendResponse);
-    case 'highlightWord':
-    case 'clearHighlight':
+    case ACTIONS.HIGHLIGHT_WORD:
+    case ACTIONS.CLEAR_HIGHLIGHT:
       return handleHighlightRelay(request);
-    case 'captureText':
-    case 'askAiAboutText':
+    case ACTIONS.CAPTURE_TEXT:
+    case ACTIONS.ASK_AI_ABOUT_TEXT:
       return handleSelectionActions(request, sender);
-    case 'triggerDeepCapture':
+    case ACTIONS.TRIGGER_DEEP_CAPTURE:
       return handleTriggerDeepCapture(request, sendResponse);
-    case 'probeCapturable':
+    case ACTIONS.PROBE_CAPTURABLE:
       return handleProbeCapturable(request, sendResponse);
-    case 'autoCaptureSave':
+    case ACTIONS.AUTO_CAPTURE_SAVE:
       return handleAutoCaptureSave(request);
     default:
-      // Unknown action: ignore for forward-compat.
       return false;
   }
 });
@@ -460,7 +494,9 @@ async function openSidebarFallback(_tab) {
       await browserAPI.sidebarAction.open();
       return true;
     }
-  } catch (_) {}
+  } catch (err) {
+    globalThis.debugLog('Omnibox', 'Sidebar fail', err);
+  }
   try {
     // Chromium: sidePanel (if available)
     if (browserAPI.sidePanel && typeof browserAPI.sidePanel.open === 'function') {
@@ -468,14 +504,16 @@ async function openSidebarFallback(_tab) {
       await browserAPI.sidePanel.open({ windowId: win.id });
       return true;
     }
-  } catch (_) {}
+  } catch (err) {
+    globalThis.debugLog('Omnibox', 'Sidepanel fail', err);
+  }
 
   return false;
 }
 
 browserAPI.action.onClicked.addListener((_tab) => {
-  // Prefer overlay (best UX on normal webpages). If the page blocks injection (new tab/about:),
-  // fall back to opening the browser sidebar when available (Firefox).
+  if (!_tab || !_tab.id) return;
+
   const sendToTab = (tabId, msg) =>
     new Promise((resolve, reject) => {
       try {
@@ -489,17 +527,21 @@ browserAPI.action.onClicked.addListener((_tab) => {
       }
     });
 
-  sendToTab(_tab.id, { action: 'toggleOverlay' })
-    .catch(async () => {
-      // If messaging failed, inject the content script then try again.
-      await browserAPI.scripting.executeScript({
-        target: { tabId: _tab.id, allFrames: true },
-        files: ['capture-extractor.js', 'content.js'],
-      });
-      await sendToTab(_tab.id, { action: 'toggleOverlay' });
-    })
-    .catch(() => openSidebarFallback(_tab))
-    .catch(() => {});
+  sendToTab(_tab.id, { action: ACTIONS.TOGGLE_OVERLAY })
+    .catch(async (err) => {
+      // If content script isn't there, inject and retry.
+      globalThis.debugLog('Action', 'Overlay toggle failed, attempting injection', err);
+      try {
+        await browserAPI.scripting.executeScript({
+          target: { tabId: _tab.id, allFrames: true },
+          files: ['capture-extractor.js', 'content.js'],
+        });
+        await sendToTab(_tab.id, { action: ACTIONS.TOGGLE_OVERLAY });
+      } catch (e) {
+        globalThis.debugLog('Action', 'Injection/Toggle failed, falling back to sidebar', e);
+        openSidebarFallback(_tab);
+      }
+    });
 });
 
 // ── Auto-Capture: Trigger capture when navigation completes ───────────────────
@@ -531,8 +573,10 @@ if (browserAPI.webNavigation && browserAPI.webNavigation.onCompleted) {
                       const best = (results || [])
                         .map((r) => r.result)
                         .find((r) => r && r.content && r.content.length > 80);
-                      if (best) handleAutoCaptureSave({ action: 'autoCaptureSave', data: best });
-                    } catch (_) {}
+                      if (best) handleAutoCaptureSave({ action: ACTIONS.AUTO_CAPTURE_SAVE, data: best });
+                    } catch (e) {
+                      globalThis.debugLog('ContentScript', 'Failed to execute script fallback', e);
+                    }
                   }
                 );
               }
