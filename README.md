@@ -49,6 +49,41 @@ The extension was born from a simple personal need: I lose focus when I only rea
 
 ## What's New
 
+### v1.10.0 — Phase 3: Content modularization + reliability fixes
+
+- **Content scripts split**: The former monolithic `content.js` is now a thin bootstrap that loads ordered modules from `extension/content/` — `highlighter-alignment.js` (pure alignment), `content-highlighter.js`, `content-overlay.js`, `content-selection-bar.js`, `content-router.js`.
+- **Shared constants**: New `extension/lexora-constants.js` exposes `MIN_CAPTURE_CONTENT_CHARS`. Consumed by `message-guards.js`, `capture-extractor.js`, and `background.js` so the “best frame” threshold can never drift again.
+- **Background injection list**: `LEXORA_PAGE_SCRIPT_FILES` centralizes the page-inject sequence used by the toolbar action, and `lexora-constants.js` is prepended everywhere `capture-extractor.js` is injected.
+- **Highlight relay**: Uses `lexoraHighlightTarget { tabId, frameId }` to message the exact tab/frame, falling back to the active tab + all frames only when the target is gone.
+- **Probe**: `ui.js` now uses a single async `sendRuntimeMessageSafe` path instead of the previous callback + promise double-handling.
+- **Ask AI from selection**: One delivery path via `storage.local.lexoraPendingAskAi`. The side panel drains it on init and via `storage.onChanged`, so requests survive the panel being closed.
+- **Chat payload budget**: Trims history (and the last user message if needed) so JSON stays comfortably under the 250 KB proxy cap.
+- **Selection bar**: Guards `selection.rangeCount > 0` before `getRangeAt(0)`.
+- **Kokoro worker**: 120 s `Promise.race` timeout around `from_pretrained` with a clear UI error.
+- **Progress migration**: In-memory single-flight per progress key prevents duplicate legacy-key migration storms.
+- **Settings UI**: Cleaned up theme block indentation/braces.
+- **Firefox**: `manifest.firefox.json` script load order matches Chrome (`storage` → `lexora-constants` → `message-guards` → `proxy` → `lesson-capture` → …).
+- **Tests**: `highlighter-alignment.test.js` for deterministic alignment; `protocol-storage.test.js` asserts the new `PENDING_ASK_AI` key.
+- **CI hardening (e2e-smoke)**: New `extension/e2e/chromium-extension-context.js` adds CI-only Chromium flags (`--disable-dev-shm-usage`, `--no-sandbox`, `--disable-setuid-sandbox`); Playwright runs **single-worker, with retries** under CI; `getExtensionOrigin` waits up to **45 s** for the service worker on slow runners.
+- **Capture extractor (CI fix)**: `collectHtmlBlocks` now falls back to `textContent` when `innerText` is empty (common in headless/Xvfb before layout runs), so deep capture is reliable on Linux runners.
+
+### v1.9.0 — Phase 2: capture consistency, chat context, export UX
+
+- **Capture**: `probePageContent` now shares the same `seen` dedup set as `extractPageContent`, so probe readiness and full capture agree on which blocks count.
+- **Capture**: Published `LexoraCaptureExtractor.LIMITS` (`MIN_LESSON_CONTENT_CHARS`, `PROBE_BLOCK_CAP`, HTML/PDF readiness thresholds) so scoring lives in one place.
+- **Chat**: Long lessons use **head + tail** truncation (`sidepanel/js/chat-context.js`) with an explicit middle-omitted marker, replacing simple beginning-only truncation.
+- **Export**: If jsPDF isn't available, the export hint area now shows a clear error instead of silently doing nothing.
+
+### v1.9.0 — Phase 1 (structural hardening, same release)
+
+- **Background**: New `proxy.js` — streamed proxy responses capped (~4 MiB), IPv6 loopback allowlisted, shared validation.
+- **Background**: New `lesson-capture.js` — monotonic operation IDs guard deep-capture timeouts and auto-capture navigation races.
+- **Highlights**: `lexoraHighlightTarget { tabId, frameId }` with lesson storage; targeted highlight relay with multi-frame fallback.
+- **Playback**: `playbackGen` on highlight/clear messages; content script ignores stale generations.
+- **Audio**: Piper worker cancel/epoch; LRU-style trimming of Kokoro/Piper blob caches.
+- **Content**: Overlay global `mousemove` / `mouseup` listeners removed on destroy.
+- **Tooling**: ESLint `@eslint/js` recommended config, `extension/tests/proxy.test.js`, Node globals for `scripts/**/*.mjs`.
+
 ### v1.7.0
 
 - **Stability**: Fixed capture flow issues that could leave the UI stuck on “Scanning…”.
@@ -111,25 +146,54 @@ Lexora/
 ├── extension/                    # Browser extension (core product)
 │   ├── manifest.json             # Manifest V3 config (Chrome)
 │   ├── manifest.firefox.json     # Firefox fallback manifest source (uses background.scripts)
-│   ├── background.js             # Service worker: capture orchestration, message relay, API proxy
-│   ├── content.js                # Content script: overlay injection, word highlighting, drag logic
+│   ├── background.js             # Service worker: dispatcher for proxy/capture/probe/highlight/Ask AI
+│   ├── debug-log.js              # Shared safe-messaging helpers (sendMessageSafe, sendRuntimeMessageSafe)
+│   ├── protocol.js               # ACTIONS enum + runtime message-shape validators
+│   ├── storage.js                # Storage key registry (LexoraStorage.KEYS) + progress key helpers
+│   ├── lexora-constants.js       # Cross-context numeric thresholds (MIN_CAPTURE_CONTENT_CHARS, …)
+│   ├── message-guards.js         # Selection/lesson clamps, trusted-sender checks
+│   ├── proxy.js                  # POST-only allowlisted proxy with streamed body cap
+│   ├── lesson-capture.js         # Monotonic op IDs for deep-capture & auto-capture races
+│   ├── capture-extractor.js      # Page extractor (HTML blocks + PDF text) with shared LIMITS
 │   ├── capture-clean.js          # Deterministic text cleanup (no AI): dedup, boilerplate removal
+│   ├── content.js                # Content bootstrap: loads extension/content/* modules in order
+│   ├── content/                  # Modular content scripts (loaded by content.js)
+│   │   ├── highlighter-alignment.js   # Pure chunk↔page word alignment helpers (unit-tested)
+│   │   ├── content-highlighter.js     # Word/range highlighting + clear, with playbackGen guards
+│   │   ├── content-overlay.js         # Draggable Shadow-DOM overlay host
+│   │   ├── content-selection-bar.js   # Floating Read / Ask AI selection bar
+│   │   └── content-router.js          # Runtime message router for content modules
 │   ├── overlay.css               # Highlight + button styles for the host page
 │   ├── icons/                    # Extension icons (48px, 128px)
 │   ├── libs/
 │   │   └── jspdf.umd.min.js     # PDF generation library
+│   ├── e2e/                      # Playwright extension tests
+│   │   ├── chromium-extension-context.js  # Shared launcher (CI-only --no-sandbox / --disable-dev-shm-usage)
+│   │   ├── extension-smoke.spec.js
+│   │   └── lexora-flows.spec.js          # Deep capture + selected-text auto-play flows
+│   ├── tests/                    # Vitest unit tests
+│   │   ├── capture-extractor.test.js
+│   │   ├── chat-context.test.js
+│   │   ├── highlighter-alignment.test.js
+│   │   ├── message-guards.test.js
+│   │   ├── protocol-storage.test.js
+│   │   ├── proxy.test.js
+│   │   └── …
 │   └── sidepanel/                # Main UI + TTS engines
 │       ├── sidepanel.html        # Panel UI (Chat, Content, Audio, Export, Settings tabs)
 │       ├── sidepanel.css         # "Luminous Void" dark theme with glassmorphism
 │       ├── sidepanel.js          # Orchestrator: audio engine + wires up sidepanel/js modules
 │       ├── js/                   # Sidepanel modules (UI, settings, chat, export, utils)
-│       │   ├── ui.js
-│       │   ├── settings.js
-│       │   ├── chat.js
-│       │   ├── export.js
+│       │   ├── ui.js                  # Tabs, capture button, probe loop, lesson rendering
+│       │   ├── settings.js            # Persistence, optional-permission requests, theme
+│       │   ├── chat.js                # Q&A submit + history budget vs proxy body cap
+│       │   ├── chat-context.js        # Head+tail lesson budgeting + fence tokens
+│       │   ├── messaging.js           # ES-module facade over debug-log.js helpers
+│       │   ├── export.js              # PDF export (jsPDF) with graceful fallback
+│       │   ├── progress.js            # Reading-progress storage + legacy key migration (single-flight)
 │       │   ├── utils.js
-│       │   └── ...
-│       ├── kokoro-worker.js      # Web Worker for Kokoro neural TTS (ES module, job queue + epoch cancel)
+│       │   └── …
+│       ├── kokoro-worker.js      # Web Worker for Kokoro neural TTS (ES module, job queue + epoch cancel + init timeout)
 │       ├── kokoro.web.js         # Kokoro TTS + Transformers.js runtime bundle
 │       ├── piper-worker.js       # Web Worker for Piper TTS (ONNX Runtime + on-demand model download)
 │       ├── piper_phonemize.*     # Piper phonemize WASM module + data
@@ -137,6 +201,7 @@ Lexora/
 ├── dist/                         # Generated build outputs (e.g. extension-firefox/)
 ├── server/                       # Reserved for future backend
 ├── BUGS.md                       # Detailed bug tracker with root-cause analyses
+├── CHANGELOG.md                  # Per-version change log (mirrors manifest.json version)
 └── .gitignore
 ```
 
@@ -144,13 +209,29 @@ Lexora/
 
 | File | Role |
 |---|---|
-| `background.js` | Service worker handling three message types: `proxyFetch` (LLM API relay), `highlightWord` / `clearHighlight` (broadcast to all frames), `triggerDeepCapture` (page extraction) |
-| `content.js` | Injects the draggable overlay host (Shadow DOM), builds a `pageWords` index via `TreeWalker`, performs greedy chunk-to-page word alignment, wraps matched words in `<span>` for highlighting |
-| `sidepanel.js` | Audio engine + TTS orchestration (Kokoro + Piper), caching/prefetch pipeline, seek/highlight sync, and integration glue for the modular UI |
-| `sidepanel/js/*.js` | Sidepanel modules: tab UI + lesson rendering (`ui.js`), settings persistence (`settings.js`), chat (`chat.js`), export (`export.js`), DOM/state helpers |
-| `kokoro-worker.js` | ES module Web Worker with internal job queue + epoch-based cancellation. Downloads Kokoro-82M ONNX model (~92 MB quantized) from Hugging Face Hub on first use |
-| `piper-worker.js` | Classic Web Worker running ONNX Runtime. Downloads Piper voice models (`amy-low`, `hfc_female-medium`) from HuggingFace on first use, caches in IndexedDB. Handles phonemization via `piper_phonemize` WASM, then ONNX inference |
-| `capture-clean.js` | Deterministic (non-AI) post-capture cleanup: Unicode normalization, whitespace compaction, consecutive duplicate removal, boilerplate pattern filtering |
+| `background.js` | Service worker dispatcher. Routes `proxyFetch` (LLM API relay), `highlightWord` / `clearHighlight` (targeted via `lexoraHighlightTarget`, with all-frames fallback), `triggerDeepCapture`, `probeCapturable`, and selection actions (`captureText`, `askAiAboutText`). |
+| `protocol.js` | Single source of truth for message `ACTIONS` and shape validators (`isHighlightWordRequest`, `isProxyFetchRequest`, …) shared by SW, content, and side panel. |
+| `storage.js` | `LexoraStorage.KEYS` registry (`CURRENT_LESSON`, `HIGHLIGHT_TARGET`, `PENDING_ASK_AI`, `PROGRESS_INDEX`, …) and progress-key helpers. |
+| `lexora-constants.js` | Cross-context numeric thresholds (e.g. `MIN_CAPTURE_CONTENT_CHARS`). Loaded by both the service worker (`importScripts`) and injected page scripts so guards & extractor can't drift. |
+| `message-guards.js` | Trusted-sender checks, selection-text clamping, auto-capture lesson normalization. |
+| `proxy.js` | POST-only allowlisted proxy with streamed response cap (~4 MiB) and 250 KB request body cap. |
+| `lesson-capture.js` | Monotonic op IDs (`beginDeepCaptureOp`, `bumpAutoCaptureAndGetId`) so late async work cannot commit after timeout / superseding navigation. |
+| `capture-extractor.js` | Page extractor (`extractPageContent`, `probePageContent`) + published `LIMITS` (`MIN_LESSON_CONTENT_CHARS`, `HTML_READY_CHARS`, `PDF_READY_CHARS`, `PROBE_BLOCK_CAP`). Falls back to `textContent` when `innerText` is empty (CI/headless). |
+| `capture-clean.js` | Deterministic (non-AI) post-capture cleanup: Unicode normalization, whitespace compaction, consecutive duplicate removal, boilerplate pattern filtering. |
+| `content.js` | Thin bootstrap that loads `extension/content/*` modules in order. |
+| `content/highlighter-alignment.js` | Pure chunk↔page word alignment helpers (deterministic, unit-tested). |
+| `content/content-highlighter.js` | DOM word/range highlighting + clear, with `playbackGen` guards so stale highlights don't survive navigation. |
+| `content/content-overlay.js` | Draggable, resizable Shadow-DOM overlay host injected into the page. |
+| `content/content-selection-bar.js` | Floating Read / Ask AI bar; guards `selection.rangeCount` before `getRangeAt(0)`. |
+| `content/content-router.js` | Runtime message router for content modules. |
+| `sidepanel.js` | Audio engine + TTS orchestration (Kokoro + Piper), caching/prefetch pipeline, seek/highlight sync, and integration glue for the modular UI. |
+| `sidepanel/js/ui.js` | Tabs, capture button, probe loop (single async path via `sendRuntimeMessageSafe`), lesson rendering. Drains `lexoraPendingAskAi` on init and via `storage.onChanged`. |
+| `sidepanel/js/chat.js` + `chat-context.js` | Chat submit + head+tail lesson budgeting; trims history (and last user message) so JSON stays under the proxy body cap. |
+| `sidepanel/js/settings.js` | Settings persistence, per-origin optional permission requests, theme, sensitive-key handling (session vs local). |
+| `sidepanel/js/progress.js` | Reading-progress storage with single-flight legacy-key migration. |
+| `sidepanel/js/messaging.js` | ES-module facade over the shared `debug-log.js` helpers (`sendMessageSafe`, `sendRuntimeMessageSafe`). |
+| `kokoro-worker.js` | ES-module Web Worker with internal job queue + epoch cancellation **and a 120 s `Promise.race` timeout around `from_pretrained`**. Downloads Kokoro-82M ONNX (~92 MB quantized) on first use. |
+| `piper-worker.js` | Classic Web Worker running ONNX Runtime. Downloads Piper voice models on first use, caches in IndexedDB. Phonemizes via `piper_phonemize` WASM, then ONNX inference. |
 
 ---
 
@@ -338,11 +419,18 @@ By default, the chat API key is kept in `chrome.storage.session` (cleared when t
 **Key design decisions:**
 
 - **Shadow DOM isolation**: The overlay is injected into the page via a closed Shadow DOM, preventing style conflicts with the host page.
+- **Modular content scripts**: `content.js` is a small bootstrap that loads `extension/content/*` modules in a defined order. The same list is exported as `LEXORA_PAGE_SCRIPT_FILES` in `background.js` so the toolbar action injects exactly the same files.
+- **Single source of truth for thresholds**: `lexora-constants.js` is shared by the service worker (`importScripts`) and every page-injected script, so `MIN_CAPTURE_CONTENT_CHARS` and friends can never silently drift between guards, the extractor, and background scoring.
+- **Targeted highlight relay**: Highlights are sent to the exact `{ tabId, frameId }` recorded in `lexoraHighlightTarget` whenever possible; the active-tab + all-frames fan-out is now only a fallback (via `webNavigation.getAllFrames`).
+- **Single-path message handlers**: The capture-readiness probe and chat history use one async path each (`sendRuntimeMessageSafe`, awaited) — no callback + `await` double handling that previously produced races/duplicate UI updates.
+- **Storage-first one-shots**: Cross-context one-shots like “Ask AI from selection” are written to `storage.local.lexoraPendingAskAi`. The side panel drains them on init and via `storage.onChanged`, so requests survive a closed panel without needing a runtime message round-trip.
+- **Capture timeouts everywhere**: Deep capture uses monotonic op IDs (`lesson-capture.js`) so late results from a superseded request can't commit; the Kokoro worker wraps `from_pretrained` in a 120 s `Promise.race` so a stuck model load surfaces a clear error instead of hanging the UI.
 - **Web Worker TTS**: All neural inference runs off the main thread in dedicated Web Workers with job queues and epoch-based cancellation.
 - **Prefetch pipeline**: Kokoro uses 1 main + 1 prefetch worker, caching up to 20 sentences ahead for gapless playback.
-- **Cross-frame highlighting**: `background.js` relays highlight messages to every frame via `webNavigation.getAllFrames`, enabling highlighting inside iframes (e.g., Udacity lessons).
+- **Cross-frame highlighting**: `background.js` can still broadcast highlight messages to every frame when no specific target is recorded, enabling highlighting inside iframes (e.g., Udacity lessons).
 - **Deterministic cleanup**: Captured content is cleaned without AI to avoid truncation issues from local LLMs. Cleanup includes Unicode normalization, boilerplate pattern matching, and deduplication.
-- **Progress storage**: Reading progress is stored using **hashed URL keys** plus a bounded `lexoraProgressIndex` (LRU-style) so it scales without huge keys.
+- **Progress storage**: Reading progress is stored using **hashed URL keys** plus a bounded `lexoraProgressIndex` (LRU-style); legacy-key migration is single-flight per key to avoid duplicate storage writes.
+- **Layout-tolerant extractor**: `collectHtmlBlocks` falls back to `textContent` when `innerText` is empty (common in headless/Xvfb before layout runs), keeping CI extraction stable on Linux runners.
 
 ---
 
@@ -387,12 +475,17 @@ Use `BUGS.md` as the lightweight bug log. Each entry should include:
 ### Tests
 
 - **Unit tests**: `npm test` (Vitest) covers:
-  - deterministic capture cleanup
-  - protocol/storage contracts
-  - DOM-safe markdown rendering helpers
-- **E2E**: `npm run test:e2e` runs a Playwright **extension smoke test**.
-
-CI runs the full Playwright suite under `xvfb` (see `.github/workflows/ci.yml`), including the deep-capture and selected-text flows in `extension/e2e/lexora-flows.spec.js`.
+  - deterministic capture cleanup (`capture-extractor.test.js`)
+  - protocol / storage contracts (`protocol-storage.test.js`)
+  - selection / lesson guards (`message-guards.test.js`)
+  - chat-context budgeting + fence-token stripping (`chat-context.test.js`)
+  - chunk↔page word alignment (`highlighter-alignment.test.js`)
+  - proxy validation + body cap (`proxy.test.js`)
+- **E2E**: `npm run test:e2e` runs the full Playwright suite (smoke + deep-capture + selected-text auto-play).
+- **CI** (`.github/workflows/ci.yml`) runs three jobs on Ubuntu:
+  - `lint-and-test` — `npm ci`, `npm run lint`, `npm test`, `npm audit --audit-level=high`.
+  - `e2e-smoke` — installs Playwright + system deps, then `xvfb-run -a npx playwright test`. CI runs **single-worker with retries** and uses the shared launcher in `extension/e2e/chromium-extension-context.js` (`--no-sandbox`, `--disable-dev-shm-usage`, `--disable-setuid-sandbox`).
+  - `build-firefox` — runs `npm run build:firefox` and verifies the generated `dist/extension-firefox/manifest.json` parses and ships the icon.
 
 ---
 
