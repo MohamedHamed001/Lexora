@@ -85,9 +85,11 @@
     leafEls.forEach((el) => {
       if (el.closest('nav,button,header,footer,[role="navigation"]')) return;
       if (!isElementVisible(el)) return;
-      // Prefer innerText (rendered, layout-aware) when available; fall back
-      // to textContent (works in JSDOM and other layout-less DOMs).
-      const rawText = typeof el.innerText === 'string' ? el.innerText : el.textContent;
+      // Prefer innerText when it has visible text; otherwise textContent (CI
+      // headless/Xvfb often yields "" innerText before layout is fully applied).
+      const inner = typeof el.innerText === 'string' ? el.innerText : '';
+      const fallback = el.textContent || '';
+      const rawText = inner.replace(/\s/g, '').length > 0 ? inner : fallback;
       const txt = normalizeLine(rawText);
       if (txt.length > 10 && !seen.has(txt)) {
         seen.add(txt);
