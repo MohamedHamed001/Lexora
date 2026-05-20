@@ -12,27 +12,27 @@ let supertonicWorkEpoch = 0;
 // ── Remote model registry ───────────────────────────────────────────────────
 const SUPERTONIC_COMMON_ASSETS = {
   text_encoder: {
-    url: 'https://huggingface.co/TensorStack/Supertonic-onnx/resolve/main/text_encoder.onnx',
+    url: 'https://huggingface.co/Supertone/supertonic/resolve/main/onnx/text_encoder.onnx',
     sha256: '992a7e7811efbf8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b',
     label: 'Text Encoder'
   },
   duration_predictor: {
-    url: 'https://huggingface.co/TensorStack/Supertonic-onnx/resolve/main/duration_predictor.onnx',
+    url: 'https://huggingface.co/Supertone/supertonic/resolve/main/onnx/duration_predictor.onnx',
     sha256: 'a92a7e7811efbf8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b',
     label: 'Duration Predictor'
   },
   vector_estimator: {
-    url: 'https://huggingface.co/TensorStack/Supertonic-onnx/resolve/main/vector_estimator.onnx',
+    url: 'https://huggingface.co/Supertone/supertonic/resolve/main/onnx/vector_estimator.onnx',
     sha256: 'b92a7e7811efbf8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b',
     label: 'Vector Estimator'
   },
   vocoder: {
-    url: 'https://huggingface.co/TensorStack/Supertonic-onnx/resolve/main/vocoder.onnx',
+    url: 'https://huggingface.co/Supertone/supertonic/resolve/main/onnx/vocoder.onnx',
     sha256: 'c92a7e7811efbf8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b',
     label: 'Vocoder'
   },
   config: {
-    url: 'https://huggingface.co/TensorStack/Supertonic-onnx/resolve/main/unicode_indexer.json',
+    url: 'https://huggingface.co/Supertone/supertonic/resolve/main/onnx/tts.json',
     sha256: 'd92a7e7811efbf8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b',
     label: 'Config'
   }
@@ -41,12 +41,12 @@ const SUPERTONIC_COMMON_ASSETS = {
 const SUPERTONIC_VOICE_PROFILES = {
   female1: {
     label: 'Female1 (Standard)',
-    url: 'https://huggingface.co/TensorStack/Supertonic-onnx/resolve/main/voice_styles/F1.json',
+    url: 'https://huggingface.co/Supertone/supertonic/resolve/main/voice_styles/F1.json',
     sha256: 'e92a7e7811efbf8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b'
   },
   male1: {
     label: 'Male1 (Deep)',
-    url: 'https://huggingface.co/TensorStack/Supertonic-onnx/resolve/main/voice_styles/M1.json',
+    url: 'https://huggingface.co/Supertone/supertonic/resolve/main/voice_styles/M1.json',
     sha256: 'f92a7e7811efbf8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b'
   }
 };
