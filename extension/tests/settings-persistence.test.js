@@ -68,7 +68,7 @@ describe('initSettings persistence on TTS engine change', () => {
       <input type="checkbox" id="setting-autocapture" />
       <button id="save-settings-btn"></button>
       <span id="settings-status"></span>
-      <select id="tts-engine"><option value="kokoro">kokoro</option><option value="piper">piper</option></select>
+      <select id="tts-engine"><option value="kokoro">kokoro</option><option value="piper">piper</option><option value="supertonic">supertonic</option></select>
       <select id="kokoro-dtype"><option value="q4">q4</option><option value="q8">q8</option></select>
       <span id="stat-session-words"></span>
       <span id="stat-session-time"></span>
@@ -112,5 +112,55 @@ describe('initSettings persistence on TTS engine change', () => {
     for (const w of writes) {
       expect(w.lexoraConfig.key).toBeUndefined();
     }
+  });
+
+  test('TTS engine change to supertonic persists correctly', async () => {
+    document.body.innerHTML = `
+      <input id="setting-url" />
+      <input id="setting-model" />
+      <input id="setting-key" />
+      <input type="checkbox" id="setting-remember-key" />
+      <input type="checkbox" id="setting-theme" />
+      <input type="checkbox" id="setting-autocapture" />
+      <button id="save-settings-btn"></button>
+      <span id="settings-status"></span>
+      <select id="tts-engine"><option value="kokoro">kokoro</option><option value="piper">piper</option><option value="supertonic">supertonic</option></select>
+      <select id="kokoro-dtype"><option value="q4">q4</option><option value="q8">q8</option></select>
+      <span id="stat-session-words"></span>
+      <span id="stat-session-time"></span>
+      <span id="stat-alltime-words"></span>
+      <span id="stat-alltime-time"></span>
+    `;
+
+    vi.resetModules();
+
+    const localSet = vi.fn((_obj, cb) => cb && cb());
+    const localGet = vi.fn((_keys, cb) => cb({}));
+    const sessionGet = vi.fn((_keys, cb) => cb({}));
+    const onChangedAdd = vi.fn();
+
+    const { state } = await import('../sidepanel/js/state.js');
+    state.browserAPI = {
+      storage: {
+        local: { get: localGet, set: localSet },
+        session: { get: sessionGet, set: vi.fn((_, cb) => cb && cb()), remove: vi.fn((_, cb) => cb && cb()) },
+        onChanged: { addListener: onChangedAdd },
+      },
+    };
+    state.config.ttsEngine = 'kokoro';
+
+    const { initSettings } = await import('../sidepanel/js/settings.js');
+    initSettings({ audio: null });
+
+    const sel = document.getElementById('tts-engine');
+    sel.value = 'supertonic';
+    sel.dispatchEvent(new Event('change'));
+
+    expect(state.config.ttsEngine).toBe('supertonic');
+    const writes = localSet.mock.calls
+      .map((c) => c[0])
+      .filter((arg) => arg && Object.prototype.hasOwnProperty.call(arg, 'lexoraConfig'));
+    expect(writes.length).toBeGreaterThan(0);
+    expect(writes[writes.length - 1].lexoraConfig.ttsEngine).toBe('supertonic');
   });
 });

@@ -11,7 +11,8 @@ export default [
       "extension/sidepanel/kokoro.web.js",
       "extension/sidepanel/piper_phonemize.js",
       "extension/sidepanel/piper-worker.js",
-      "extension/sidepanel/kokoro-worker.js"
+      "extension/sidepanel/kokoro-worker.js",
+      "extension/sidepanel/supertonic-worker.js"
     ],
   },
   {

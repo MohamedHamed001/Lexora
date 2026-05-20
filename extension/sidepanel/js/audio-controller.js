@@ -16,6 +16,13 @@ const PIPER_MODELS = {
   hfc_female: { label: 'Google Female EN (medium)',  sampleRate: 22050 },
 };
 
+const SUPERTONIC_MODELS = {
+  female1: { label: 'Female1 (Standard)', sampleRate: 44100 },
+  male1:   { label: 'Male1 (Deep)',       sampleRate: 44100 },
+};
+
+const SUPERTONIC_PREFIX = 'supertonic|';
+
 const KOKORO_VOICE_META = {
   af_heart:    { label: 'Heart',    gender: 'F', accent: 'US', grade: 'A'  },
   af_alloy:    { label: 'Alloy',    gender: 'F', accent: 'US', grade: 'C'  },
@@ -54,6 +61,9 @@ const PIPER_BUNDLED_PREFIX = 'piper|';
 const GOOGLE_VOICE_PREFIX  = 'sys|';
 const NUM_PREFETCH_WORKERS = 2;
 const PREFETCH_WINDOW = 20;
+
+const NUM_SUPERTONIC_PREFETCH_WORKERS = 2;
+const SUPERTONIC_PREFETCH_WINDOW = 20;
 
 export class AudioController {
   constructor({ state, dom, browserAPI, addStats }) {
@@ -117,6 +127,18 @@ export class AudioController {
     this.piperSynthCompletedCount = 0;
     this.piperSynthTotalCount = 0;
 
+    // SuperTonic state
+    this.supertonicMainWorker = null;
+    this.supertonicPrefetchPool = [];
+    this.supertonicReady = false;
+    this.supertonicSampleRate = 44100;
+    this.supertonicLoadPromise = null;
+    this.supertonicLoadedVoiceKey = null;
+    this.supertonicAudioCache = new Map();
+    this.supertonicSynthQueue = [];
+    this.supertonicSynthCompletedCount = 0;
+    this.supertonicSynthTotalCount = 0;
+
     this._bindEvents();
   }
 
@@ -139,8 +161,11 @@ export class AudioController {
 
     if (this.synth.addEventListener) {
       this.synth.addEventListener('voiceschanged', () => {
-        if (this.state.config.ttsEngine === 'piper') this.populateVoicePicker([]);
-        else this.populateVoicePicker(Object.keys(KOKORO_VOICE_META));
+        if (this.state.config.ttsEngine === 'piper' || this.state.config.ttsEngine === 'supertonic') {
+          this.populateVoicePicker([]);
+        } else {
+          this.populateVoicePicker(Object.keys(KOKORO_VOICE_META));
+        }
       });
     }
 
@@ -369,6 +394,14 @@ export class AudioController {
       try { w.postMessage({ type: 'cancel' }); }
       catch (err) { debugLog('AudioController', 'piper prefetch worker cancel failed', err); }
     }
+    if (this.supertonicMainWorker) {
+      try { this.supertonicMainWorker.postMessage({ type: 'cancel' }); }
+      catch (err) { debugLog('AudioController', 'supertonic main worker cancel failed', err); }
+    }
+    for (const w of this.supertonicPrefetchPool) {
+      try { w.postMessage({ type: 'cancel' }); }
+      catch (err) { debugLog('AudioController', 'supertonic prefetch worker cancel failed', err); }
+    }
     this.synthQueue = [];
     this.stopSeekerTimer();
     this.sendClearHighlight(true);
@@ -391,6 +424,10 @@ export class AudioController {
       this.piperSynthQueue = [];
       this.piperSynthCompletedCount = 0;
       this.piperSynthTotalCount = 0;
+      this.supertonicAudioCache.clear();
+      this.supertonicSynthQueue = [];
+      this.supertonicSynthCompletedCount = 0;
+      this.supertonicSynthTotalCount = 0;
     } else {
       for (const [k, v] of this.audioCache) {
         if (v == null) this.audioCache.delete(k);
@@ -398,14 +435,17 @@ export class AudioController {
       for (const [k, v] of this.piperAudioCache) {
         if (v == null) this.piperAudioCache.delete(k);
       }
+      for (const [k, v] of this.supertonicAudioCache) {
+        if (v == null) this.supertonicAudioCache.delete(k);
+      }
     }
     this._trimPrefetchCaches();
   }
-
+ 
   _trimPrefetchCaches() {
     const radius = Math.max(PIPER_PREFETCH_WINDOW, PREFETCH_WINDOW) + 4;
     const c = this.sentenceIdx;
-    for (const map of [this.audioCache, this.piperAudioCache]) {
+    for (const map of [this.audioCache, this.piperAudioCache, this.supertonicAudioCache]) {
       for (const [k, v] of map) {
         if (typeof k !== 'number' || !Number.isFinite(k)) continue;
         if (Math.abs(k - c) <= radius) continue;
@@ -559,7 +599,7 @@ export class AudioController {
 
   // --- Voice UI / Parsing ---
   initVoice(tries = 0) {
-    if (this.state.config.ttsEngine === 'piper') {
+    if (this.state.config.ttsEngine === 'piper' || this.state.config.ttsEngine === 'supertonic') {
       this.primeSpeechSynthesisVoices();
       if (this.synth.getVoices().length > 0 || tries >= 40) {
         this.populateVoicePicker([]);
@@ -703,9 +743,36 @@ export class AudioController {
     return { kind: 'piper', modelKey: 'amy' };
   }
 
+  parseSuperTonicVoice(value) {
+    if (value.startsWith(SUPERTONIC_PREFIX)) {
+      const voiceKey = value.slice(SUPERTONIC_PREFIX.length) || 'female1';
+      return { kind: 'supertonic', voiceKey };
+    }
+    return { kind: 'supertonic', voiceKey: 'female1' };
+  }
+
   populateVoicePicker(availableVoiceIds) {
     if(!this.dom.voicePicker) return;
     this.dom.voicePicker.innerHTML = '';
+
+    if (this.state.config.ttsEngine === 'supertonic') {
+      const supertonicGroup = document.createElement('optgroup');
+      supertonicGroup.label = 'SuperTonic (Neural high-fidelity — downloads on first use)';
+
+      const female1 = document.createElement('option');
+      female1.value = `${SUPERTONIC_PREFIX}female1`;
+      female1.textContent = 'Female1 — Standard';
+      female1.selected = true; // Set as default for SuperTonic
+      supertonicGroup.appendChild(female1);
+
+      const male1 = document.createElement('option');
+      male1.value = `${SUPERTONIC_PREFIX}male1`;
+      male1.textContent = 'Male1 — Deep';
+      supertonicGroup.appendChild(male1);
+
+      this.dom.voicePicker.appendChild(supertonicGroup);
+      return;
+    }
 
     if (this.state.config.ttsEngine === 'piper') {
       const piperGroup = document.createElement('optgroup');
@@ -1005,6 +1072,100 @@ export class AudioController {
     return this.piperLoadPromise;
   }
 
+  disposeSuperTonicWorkers() {
+    if (this.supertonicMainWorker) {
+      try { this.supertonicMainWorker.terminate(); } catch (_) { /* already terminated */ }
+      this.supertonicMainWorker = null;
+    }
+    for (const w of this.supertonicPrefetchPool) {
+      try { w.terminate(); } catch (_) { /* already terminated */ }
+    }
+    this.supertonicPrefetchPool = [];
+  }
+
+  createSuperTonicWorker() {
+    return new Worker(this.browserAPI.runtime.getURL('sidepanel/supertonic-worker.js'));
+  }
+
+  initSuperTonicWorkerInstance(worker, voiceKey) {
+    return new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error('SuperTonic init timed out')), 300000);
+      worker.onmessage = (e) => {
+        const msg = e.data;
+        if (msg.type === 'initialized') {
+          clearTimeout(timeout);
+          resolve();
+        } else if (msg.type === 'progress') {
+          this.updateDownloadProgress(msg.progress);
+        } else if (msg.type === 'log') {
+          debugLog('AudioController', `SuperTonic: ${msg.message}`);
+        } else if (msg.type === 'error') {
+          clearTimeout(timeout);
+          reject(new Error(msg.error));
+        }
+      };
+      worker.onerror = (err) => {
+        clearTimeout(timeout);
+        reject(err);
+      };
+      worker.postMessage({ type: 'init', voiceKey });
+    });
+  }
+
+  async loadSuperTonicModel(voiceKey = 'female1') {
+    if (this.supertonicReady && this.supertonicLoadedVoiceKey === voiceKey) return true;
+
+    if (this.supertonicReady || this.supertonicLoadPromise) {
+      this.disposeSuperTonicWorkers();
+      this.supertonicReady = false;
+      this.supertonicLoadPromise = null;
+      this.supertonicLoadedVoiceKey = null;
+    }
+
+    const modelMeta = SUPERTONIC_MODELS[voiceKey] || SUPERTONIC_MODELS.female1;
+    this.supertonicSampleRate = modelMeta.sampleRate;
+
+    this.supertonicLoadPromise = (async () => {
+      if (this.dom.statusLabel) this.dom.statusLabel.textContent = `🧠 Loading SuperTonic (${modelMeta.label})…`;
+      this.showDownloadProgress(true);
+      debugLog('AudioController', `Loading SuperTonic on-demand (${modelMeta.label}, 1 main + ${NUM_SUPERTONIC_PREFETCH_WORKERS} prefetch)…`);
+      try {
+        this.supertonicMainWorker = this.createSuperTonicWorker();
+        await this.initSuperTonicWorkerInstance(this.supertonicMainWorker, voiceKey);
+
+        this.supertonicPrefetchPool = [];
+        const prefetchWorkers = [];
+        for (let i = 0; i < NUM_SUPERTONIC_PREFETCH_WORKERS; i++) {
+          prefetchWorkers.push(this.createSuperTonicWorker());
+        }
+        await Promise.all(prefetchWorkers.map((w) => this.initSuperTonicWorkerInstance(w, voiceKey)));
+        this.supertonicPrefetchPool = prefetchWorkers;
+
+        const attach = (w) => {
+          w.onmessage = this.handleSuperTonicWorkerMessage.bind(this);
+        };
+        attach(this.supertonicMainWorker);
+        for (const w of this.supertonicPrefetchPool) attach(w);
+
+        this.supertonicReady = true;
+        this.supertonicLoadedVoiceKey = voiceKey;
+        if (this.dom.statusLabel) this.dom.statusLabel.textContent = '';
+        this.showDownloadProgress(false);
+        return true;
+      } catch (e) {
+        debugLog(`SuperTonic load error: ${e.message}`, 'error');
+        if (this.dom.statusLabel) this.dom.statusLabel.textContent = '❌ ' + e.message;
+        this.showDownloadProgress(false);
+        this.disposeSuperTonicWorkers();
+        this.supertonicLoadPromise = null;
+        this.supertonicLoadedVoiceKey = null;
+        return false;
+      }
+    })();
+
+    return this.supertonicLoadPromise;
+  }
+
   // --- Synthesis Logic ---
   dispatchNextPiperWorker(worker) {
     while (this.piperSynthQueue.length) {
@@ -1101,6 +1262,104 @@ export class AudioController {
 
   piperAudioCacheHasBlob(idx) {
     const e = this.piperAudioCache.get(idx);
+    return !!(e && e.blob);
+  }
+
+  dispatchNextSuperTonicWorker(worker) {
+    while (this.supertonicSynthQueue.length) {
+      const idx = this.supertonicSynthQueue.shift();
+      const existing = this.supertonicAudioCache.get(idx);
+      if (existing && existing.blob) continue;
+      if (existing === null) this.supertonicAudioCache.delete(idx);
+      this.supertonicAudioCache.set(idx, null);
+      worker.postMessage({
+        type: 'synthesize',
+        text: this.sentences[idx].trim(),
+        requestId: this.currentSynthesisId,
+        prefetchIdx: idx,
+      });
+      return;
+    }
+  }
+
+  synthesizeAllSuperTonic(fromIdx = 0) {
+    if (!this.supertonicReady || !this.supertonicMainWorker) return;
+    this.supertonicSynthQueue = [];
+    this.supertonicSynthCompletedCount = 0;
+
+    const capIdx = Math.min(fromIdx + SUPERTONIC_PREFETCH_WINDOW, this.sentences.length);
+    const priority = [];
+    for (let i = fromIdx; i < capIdx; i++) {
+      const entry = this.supertonicAudioCache.get(i);
+      if (entry && entry.blob) {
+        this.supertonicSynthCompletedCount++;
+        continue;
+      }
+      if (entry === null) this.supertonicAudioCache.delete(i);
+      if (i === this.sentenceIdx) {
+        priority.unshift(i);
+      } else {
+        priority.push(i);
+      }
+    }
+    this.supertonicSynthQueue = priority;
+    this.supertonicSynthTotalCount = this.supertonicSynthCompletedCount + this.supertonicSynthQueue.length;
+
+    const allWorkers = [this.supertonicMainWorker, ...this.supertonicPrefetchPool];
+    for (const w of allWorkers) {
+      this.dispatchNextSuperTonicWorker(w);
+    }
+  }
+
+  handleSuperTonicWorkerMessage(e) {
+    const msg = e.data;
+    if (msg.requestId != null && msg.requestId !== this.currentSynthesisId) return;
+
+    if (msg.type === 'audio') {
+      const audioSamples = msg.data instanceof Float32Array ? msg.data : new Float32Array(msg.data || []);
+      if (audioSamples.length === 0) return;
+      const blob = encodeWAV(audioSamples, this.supertonicSampleRate);
+
+      if (msg.prefetchIdx != null) {
+        this.supertonicAudioCache.set(msg.prefetchIdx, { blob, sampleRate: this.supertonicSampleRate });
+        this.supertonicSynthCompletedCount++;
+        if (this.supertonicSynthCompletedCount < this.supertonicSynthTotalCount) {
+          if (this.dom.statusLabel) this.dom.statusLabel.textContent = `Synthesizing ${this.supertonicSynthCompletedCount}/${this.supertonicSynthTotalCount}…`;
+        } else {
+          if (this.dom.statusLabel) this.dom.statusLabel.textContent = '';
+        }
+        this.dispatchNextSuperTonicWorker(e.target);
+
+        if (msg.prefetchIdx === this.sentenceIdx && this.speaking && !this.currentAudioElement) {
+          this.playFromBlob(blob, this.supertonicSampleRate, 'supertonic');
+        } else if (this.speaking && !this.currentAudioElement && this.supertonicAudioCacheHasBlob(this.sentenceIdx)) {
+          const c = this.supertonicAudioCache.get(this.sentenceIdx);
+          this.playFromBlob(c.blob, c.sampleRate, 'supertonic');
+        }
+      } else {
+        if (this.dom.statusLabel) this.dom.statusLabel.textContent = '';
+        this.playFromBlob(blob, this.supertonicSampleRate, 'supertonic');
+      }
+    } else if (msg.type === 'error') {
+      if (msg.prefetchIdx != null) {
+        this.supertonicAudioCache.delete(msg.prefetchIdx);
+        this.dispatchNextSuperTonicWorker(e.target);
+        if (this.speaking) this.synthesizeAllSuperTonic(this.sentenceIdx);
+      } else {
+        debugLog(`SuperTonic synthesis error: ${msg.error}`, 'error');
+        if (this.dom.statusLabel) this.dom.statusLabel.textContent = '';
+        if (this.speaking && msg.requestId === this.currentSynthesisId) {
+          this.advanceSentence();
+          this.speakNext();
+        }
+      }
+    } else if (msg.type === 'log') {
+      debugLog('AudioController', `SuperTonic: ${msg.message}`);
+    }
+  }
+
+  supertonicAudioCacheHasBlob(idx) {
+    const e = this.supertonicAudioCache.get(idx);
     return !!(e && e.blob);
   }
 
@@ -1330,6 +1589,40 @@ export class AudioController {
     const text = this.sentences[this.sentenceIdx].trim();
     const selectedValue = this.dom.voicePicker?.value || '';
     const engine = this.state.config.ttsEngine || 'kokoro';
+
+    if (engine === 'supertonic') {
+      const picked = this.parseSuperTonicVoice(selectedValue);
+      if (this.dom.playBtn) {
+        this.dom.playBtn.disabled = true;
+        this.dom.playBtn.textContent = '⏳ Loading…';
+      }
+      const ok = await this.loadSuperTonicModel(picked.voiceKey || 'female1');
+      if (this.dom.playBtn) this.dom.playBtn.disabled = false;
+
+      if (!ok || !this.speaking) {
+        if (this.dom.playBtn) this.dom.playBtn.textContent = '▶ Play';
+        return;
+      }
+      if (this.dom.playBtn) this.dom.playBtn.textContent = '⏸ Pause';
+
+      this.synthesizeAllSuperTonic(this.sentenceIdx);
+
+      const cached = this.supertonicAudioCache.get(this.sentenceIdx);
+      if (cached && cached.blob) {
+        if (this.dom.statusLabel) {
+          this.dom.statusLabel.textContent = this.supertonicSynthCompletedCount < this.supertonicSynthTotalCount
+            ? `Synthesizing ${this.supertonicSynthCompletedCount}/${this.supertonicSynthTotalCount}…`
+            : '';
+        }
+        this.playFromBlob(cached.blob, cached.sampleRate, picked.voiceKey || 'supertonic');
+        return;
+      }
+
+      if (this.dom.statusLabel) {
+        this.dom.statusLabel.textContent = `Synthesizing ${this.supertonicSynthCompletedCount}/${this.supertonicSynthTotalCount}…`;
+      }
+      return;
+    }
 
     if (engine === 'piper') {
       const picked = this.parsePiperOrSystemVoice(selectedValue);

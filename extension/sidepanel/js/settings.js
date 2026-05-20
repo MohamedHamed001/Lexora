@@ -266,7 +266,8 @@ export function initSettings({ audio }) {
 
   if (dom.ttsEngineSelect) {
     dom.ttsEngineSelect.addEventListener('change', () => {
-      const nextEngine = dom.ttsEngineSelect.value === 'piper' ? 'piper' : 'kokoro';
+      const val = dom.ttsEngineSelect.value;
+      const nextEngine = (val === 'piper' || val === 'supertonic') ? val : 'kokoro';
       state.config.ttsEngine = nextEngine;
       if (audioCtrl) audioCtrl.cancelAudio(true);
       if (audioCtrl) audioCtrl.showDownloadProgress(false);
