@@ -1269,7 +1269,7 @@ export class AudioController {
     while (this.supertonicSynthQueue.length) {
       const idx = this.supertonicSynthQueue.shift();
       const existing = this.supertonicAudioCache.get(idx);
-      if (existing && existing.blob) continue;
+      if (existing && (existing.blob || existing.failed)) continue;
       if (existing === null) this.supertonicAudioCache.delete(idx);
       this.supertonicAudioCache.set(idx, null);
       worker.postMessage({
@@ -1341,16 +1341,40 @@ export class AudioController {
         this.playFromBlob(blob, this.supertonicSampleRate, 'supertonic');
       }
     } else if (msg.type === 'error') {
+      debugLog('AudioController', `SuperTonic synthesis error: ${msg.error}`);
       if (msg.prefetchIdx != null) {
-        this.supertonicAudioCache.delete(msg.prefetchIdx);
+        // Mark this sentence as permanently failed so we don't retry it in a loop
+        this.supertonicAudioCache.set(msg.prefetchIdx, { failed: true, error: msg.error });
+        this.supertonicSynthCompletedCount++;
         this.dispatchNextSuperTonicWorker(e.target);
-        if (this.speaking) this.synthesizeAllSuperTonic(this.sentenceIdx);
+
+        // If this was the sentence we're waiting on, fall back to native speech
+        if (msg.prefetchIdx === this.sentenceIdx && this.speaking && !this.currentAudioElement) {
+          const text = (this.sentences[this.sentenceIdx] || '').trim();
+          if (text) {
+            debugLog('AudioController', `SuperTonic failed for current sentence — falling back to native speech for: "${text.substring(0, 40)}…"`);
+            if (this.dom.statusLabel) this.dom.statusLabel.textContent = 'Neural TTS unavailable — using system voice…';
+            const rate = parseFloat(this.dom.rateSlider?.value || 1);
+            this.speakWithSystemVoice(text, null, rate);
+          } else {
+            this.advanceSentence();
+            this.speakNext();
+          }
+        }
       } else {
-        debugLog(`SuperTonic synthesis error: ${msg.error}`, 'error');
         if (this.dom.statusLabel) this.dom.statusLabel.textContent = '';
         if (this.speaking && msg.requestId === this.currentSynthesisId) {
-          this.advanceSentence();
-          this.speakNext();
+          // Inline synthesis failure (non-prefetch path) — fall back to native speech
+          const text = (this.sentences[this.sentenceIdx] || '').trim();
+          if (text) {
+            debugLog('AudioController', `SuperTonic inline synthesis failed — falling back to native speech`);
+            if (this.dom.statusLabel) this.dom.statusLabel.textContent = 'Neural TTS unavailable — using system voice…';
+            const rate = parseFloat(this.dom.rateSlider?.value || 1);
+            this.speakWithSystemVoice(text, null, rate);
+          } else {
+            this.advanceSentence();
+            this.speakNext();
+          }
         }
       }
     } else if (msg.type === 'log') {
@@ -1615,6 +1639,14 @@ export class AudioController {
             : '';
         }
         this.playFromBlob(cached.blob, cached.sampleRate, picked.voiceKey || 'supertonic');
+        return;
+      }
+      // If the current sentence already failed ONNX synthesis, fall back to native speech immediately
+      if (cached && cached.failed) {
+        debugLog('AudioController', `SuperTonic cached failure for sentence ${this.sentenceIdx} — falling back to native speech`);
+        if (this.dom.statusLabel) this.dom.statusLabel.textContent = 'Neural TTS unavailable — using system voice…';
+        const rate = parseFloat(this.dom.rateSlider?.value || 1);
+        this.speakWithSystemVoice(text, null, rate);
         return;
       }
 

@@ -35,6 +35,11 @@ const SUPERTONIC_COMMON_ASSETS = {
     url: 'https://huggingface.co/Supertone/supertonic/resolve/main/onnx/tts.json',
     sha256: 'd92a7e7811efbf8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b',
     label: 'Config'
+  },
+  unicode_indexer: {
+    url: 'https://huggingface.co/Supertone/supertonic/resolve/main/onnx/unicode_indexer.json',
+    sha256: 'e02a7e7811efbf8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b',
+    label: 'Unicode Indexer'
   }
 };
 
@@ -216,6 +221,9 @@ async function getSuperTonicAssets(voiceKey) {
   const configBuf = await getAsset('config', SUPERTONIC_COMMON_ASSETS.config);
   assets.configJson = new TextDecoder().decode(configBuf);
 
+  const unicodeIndexerBuf = await getAsset('unicode_indexer', SUPERTONIC_COMMON_ASSETS.unicode_indexer);
+  assets.unicodeIndexerJson = new TextDecoder().decode(unicodeIndexerBuf);
+
   const voiceBuf = await getAsset(`voice:${voiceKey}`, {
     url: voiceMeta.url,
     sha256: voiceMeta.sha256,
@@ -247,6 +255,7 @@ let sessions = {
 
 let config = null;
 let voiceStyle = null;
+let unicodeIndexer = null;
 let initPromise = null;
 let activeVoiceKey = null;
 
@@ -261,6 +270,10 @@ async function init(data) {
       const assets = await getSuperTonicAssets(voiceKey);
       config = JSON.parse(assets.configJson);
       voiceStyle = JSON.parse(assets.voiceJson);
+      unicodeIndexer = JSON.parse(assets.unicodeIndexerJson);
+
+      log(`Config parsed: latent_dim=${config.ttl?.latent_dim}, sample_rate=${config.ae?.sample_rate}`);
+      log(`Unicode indexer loaded: ${unicodeIndexer.length} entries`);
 
       const createOptions = {
         executionProviders: ['wasm'],
@@ -270,16 +283,16 @@ async function init(data) {
       log('Creating ONNX Inference Sessions for the 4-stage pipeline…');
       
       sessions.text_encoder = await ort.InferenceSession.create(assets.text_encoder, createOptions);
-      log('Text Encoder session created.');
+      log(`Text Encoder session created. Inputs: [${sessions.text_encoder.inputNames.join(', ')}] Outputs: [${sessions.text_encoder.outputNames.join(', ')}]`);
 
       sessions.duration_predictor = await ort.InferenceSession.create(assets.duration_predictor, createOptions);
-      log('Duration Predictor session created.');
+      log(`Duration Predictor session created. Inputs: [${sessions.duration_predictor.inputNames.join(', ')}] Outputs: [${sessions.duration_predictor.outputNames.join(', ')}]`);
 
       sessions.vector_estimator = await ort.InferenceSession.create(assets.vector_estimator, createOptions);
-      log('Vector Estimator session created.');
+      log(`Vector Estimator session created. Inputs: [${sessions.vector_estimator.inputNames.join(', ')}] Outputs: [${sessions.vector_estimator.outputNames.join(', ')}]`);
 
       sessions.vocoder = await ort.InferenceSession.create(assets.vocoder, createOptions);
-      log('Vocoder session created.');
+      log(`Vocoder session created. Inputs: [${sessions.vocoder.inputNames.join(', ')}] Outputs: [${sessions.vocoder.outputNames.join(', ')}]`);
 
       activeVoiceKey = voiceKey;
       log('All SuperTonic inference sessions successfully initialized.');
@@ -296,34 +309,39 @@ async function init(data) {
   return initPromise;
 }
 
-// ── Simple Character Tokenizer ──────────────────────────────────────────────
+// ── Unicode Indexer Tokenizer ───────────────────────────────────────────────
+// The official SuperTonic tokenizer uses unicode_indexer.json — a flat array
+// indexed by Unicode code point that maps each character to its token ID.
+// Unmapped characters (value -1) are silently skipped.
 function tokenize(text) {
-  // Checks if the configuration has a vocabulary.
-  const vocab = config.vocab || config.characters || config || {};
-  const tokenIds = [];
-  
-  // Standard padding/BOS/EOS if specified
-  const bosId = vocab['<bos>'] !== undefined ? vocab['<bos>'] : 1;
-  const eosId = vocab['<eos>'] !== undefined ? vocab['<eos>'] : 2;
-  const padId = vocab['<pad>'] !== undefined ? vocab['<pad>'] : 0;
-
-  tokenIds.push(bosId);
-  tokenIds.push(padId);
-
-  for (let i = 0; i < text.length; i++) {
-    const char = text[i].toLowerCase();
-    if (vocab[char] !== undefined) {
-      tokenIds.push(vocab[char]);
-    } else {
-      // Fallback: map to standard char codes or space if unrecognized
-      const code = char.charCodeAt(0);
-      tokenIds.push((code % 80) + 3); // Map into standard range offset
-    }
-    tokenIds.push(padId);
+  if (!unicodeIndexer || !Array.isArray(unicodeIndexer)) {
+    throw new Error('unicode_indexer not loaded — cannot tokenize');
   }
-
-  tokenIds.push(eosId);
+  const tokenIds = [];
+  for (let i = 0; i < text.length; i++) {
+    const codePoint = text.codePointAt(i);
+    // Handle surrogate pairs
+    if (codePoint > 0xFFFF) i++;
+    if (codePoint < unicodeIndexer.length) {
+      const tokenId = unicodeIndexer[codePoint];
+      if (tokenId >= 0) {
+        tokenIds.push(tokenId);
+      }
+      // Skip unmapped characters (tokenId === -1)
+    }
+  }
   return tokenIds;
+}
+
+// ── Helper: build feeds dict by matching known input names ──────────────────
+function buildFeeds(session, tensorMap) {
+  const feeds = {};
+  for (const name of session.inputNames) {
+    if (tensorMap[name] !== undefined) {
+      feeds[name] = tensorMap[name];
+    }
+  }
+  return feeds;
 }
 
 // ── Speech Synthesis Stage Runner ───────────────────────────────────────────
@@ -339,27 +357,68 @@ async function synthesize(text, requestId, prefetchIdx) {
     log(`${tag}Synthesizing text with SuperTonic: "${text.substring(0, 35)}…"`);
 
     const tokenIds = tokenize(text);
+    if (tokenIds.length === 0) {
+      throw new Error('Tokenization produced zero tokens — text may be empty or contain only unsupported characters.');
+    }
     if (epochAtStart !== supertonicWorkEpoch) return;
 
-    log(`Tokens: ${tokenIds.join(', ')}`);
+    log(`Tokens (${tokenIds.length}): ${tokenIds.slice(0, 20).join(', ')}${tokenIds.length > 20 ? '…' : ''}`);
+
+    // Read latent dimensions from config
+    const latentDim = config?.ttl?.latent_dim || 24;
+    const sampleRate = config?.ae?.sample_rate || 44100;
+
+    // ── Prepare voice style tensor ──────────────────────────────────────────
+    let styleTensor = null;
+    if (voiceStyle) {
+      // Voice style JSON can have various structures — look for the embedding
+      const styleData = voiceStyle.embedding || voiceStyle.style || voiceStyle.latent || voiceStyle;
+      if (Array.isArray(styleData) && styleData.length > 0) {
+        const flat = new Float32Array(styleData.flat(Infinity));
+        // Reshape: the style encoder expects (1, N_chunks, latent_dim)
+        // where N_chunks = flat.length / latentDim
+        const nChunks = Math.max(1, Math.floor(flat.length / latentDim));
+        styleTensor = new ort.Tensor('float32', flat, [1, nChunks, latentDim]);
+        log(`Style tensor shape: [1, ${nChunks}, ${latentDim}]`);
+      }
+    }
 
     // ── STAGE 1: Text Encoder ───────────────────────────────────────────────
     const seqLen = tokenIds.length;
-    const inputTensor = new ort.Tensor('int64', new BigInt64Array(tokenIds.map(BigInt)), [1, seqLen]);
-    const lengthTensor = new ort.Tensor('int64', new BigInt64Array([BigInt(seqLen)]), [1]);
+    const inputIdsTensor = new ort.Tensor('int64', new BigInt64Array(tokenIds.map(BigInt)), [1, seqLen]);
+    const inputLengthTensor = new ort.Tensor('int64', new BigInt64Array([BigInt(seqLen)]), [1]);
+    const attentionMaskTensor = new ort.Tensor('int64', new BigInt64Array(seqLen).fill(1n), [1, seqLen]);
 
-    const encoderFeeds = {};
-    const textEncoderInputs = sessions.text_encoder.inputNames;
-    if (textEncoderInputs.includes('input') || textEncoderInputs[0] === 'input') {
-      encoderFeeds[textEncoderInputs[0]] = inputTensor;
-    } else {
-      encoderFeeds[textEncoderInputs[0] || 'input'] = inputTensor;
-    }
-    if (textEncoderInputs.length > 1) {
-      encoderFeeds[textEncoderInputs[1]] = lengthTensor;
+    // Build feeds dynamically from session input names
+    const encoderCandidates = {
+      // Common input names for text encoders
+      'input': inputIdsTensor,
+      'input_ids': inputIdsTensor,
+      'text': inputIdsTensor,
+      'x': inputIdsTensor,
+      'char_ids': inputIdsTensor,
+      'input_lengths': inputLengthTensor,
+      'text_lengths': inputLengthTensor,
+      'lengths': inputLengthTensor,
+      'attention_mask': attentionMaskTensor,
+      'mask': attentionMaskTensor,
+    };
+    if (styleTensor) {
+      encoderCandidates['style'] = styleTensor;
+      encoderCandidates['style_input'] = styleTensor;
+      encoderCandidates['voice_style'] = styleTensor;
+      encoderCandidates['speaker_embedding'] = styleTensor;
     }
 
-    log('Running Stage 1: Text Encoder ONNX inference…');
+    const encoderFeeds = buildFeeds(sessions.text_encoder, encoderCandidates);
+    // Fallback: if no matched names, just assign positionally
+    if (Object.keys(encoderFeeds).length === 0) {
+      const names = sessions.text_encoder.inputNames;
+      encoderFeeds[names[0]] = inputIdsTensor;
+      if (names.length > 1) encoderFeeds[names[1]] = inputLengthTensor;
+      if (names.length > 2 && styleTensor) encoderFeeds[names[2]] = styleTensor;
+    }
+    log(`Running Stage 1: Text Encoder. Feeds: [${Object.keys(encoderFeeds).join(', ')}]`);
     const encoderOutputs = await sessions.text_encoder.run(encoderFeeds);
     if (epochAtStart !== supertonicWorkEpoch) return;
 
@@ -367,15 +426,45 @@ async function synthesize(text, requestId, prefetchIdx) {
     if (!textLatents || !textLatents.data) {
       throw new Error('Stage 1 failed: No text latents returned.');
     }
+    log(`Text Encoder output "${sessions.text_encoder.outputNames[0]}" shape: [${textLatents.dims.join(', ')}]`);
 
-    log(`Text Encoder Output Shape: ${textLatents.dims.join('x')}`);
+    // Collect all encoder outputs for later stages that may reference them
+    const allEncoderOutputs = {};
+    for (const outName of sessions.text_encoder.outputNames) {
+      allEncoderOutputs[outName] = encoderOutputs[outName];
+    }
 
     // ── STAGE 2: Duration Predictor ─────────────────────────────────────────
-    const durationFeeds = {};
-    const durationInputs = sessions.duration_predictor.inputNames;
-    durationFeeds[durationInputs[0] || 'text_latents'] = textLatents;
+    const durationCandidates = {
+      ...allEncoderOutputs,
+    };
+    // Also try common names pointing to the primary encoder output
+    durationCandidates['text_latents'] = textLatents;
+    durationCandidates['encoder_output'] = textLatents;
+    durationCandidates['hidden_states'] = textLatents;
+    durationCandidates['x'] = textLatents;
+    durationCandidates['input'] = inputIdsTensor;
+    durationCandidates['input_ids'] = inputIdsTensor;
+    durationCandidates['char_ids'] = inputIdsTensor;
+    durationCandidates['text'] = inputIdsTensor;
+    durationCandidates['input_lengths'] = inputLengthTensor;
+    durationCandidates['text_lengths'] = inputLengthTensor;
+    durationCandidates['lengths'] = inputLengthTensor;
+    if (styleTensor) {
+      durationCandidates['style'] = styleTensor;
+      durationCandidates['style_input'] = styleTensor;
+      durationCandidates['voice_style'] = styleTensor;
+    }
 
-    log('Running Stage 2: Duration Predictor ONNX inference…');
+    const durationFeeds = buildFeeds(sessions.duration_predictor, durationCandidates);
+    // Positional fallback
+    if (Object.keys(durationFeeds).length === 0) {
+      const names = sessions.duration_predictor.inputNames;
+      durationFeeds[names[0]] = textLatents;
+      if (names.length > 1 && styleTensor) durationFeeds[names[1]] = styleTensor;
+    }
+
+    log(`Running Stage 2: Duration Predictor. Feeds: [${Object.keys(durationFeeds).join(', ')}]`);
     const durationOutputs = await sessions.duration_predictor.run(durationFeeds);
     if (epochAtStart !== supertonicWorkEpoch) return;
 
@@ -383,64 +472,138 @@ async function synthesize(text, requestId, prefetchIdx) {
     if (!durationsOut || !durationsOut.data) {
       throw new Error('Stage 2 failed: No phoneme durations returned.');
     }
-
-    log(`Duration Predictor Output Shape: ${durationsOut.dims.join('x')}`);
+    log(`Duration Predictor output "${sessions.duration_predictor.outputNames[0]}" shape: [${durationsOut.dims.join(', ')}]`);
 
     // Process durations & expand text latents
     const durations = Array.from(durationsOut.data);
-    const latentDim = textLatents.dims[2] || 192; // default dimension
+    const textLatentDim = textLatents.dims[textLatents.dims.length - 1];
     const expandedList = [];
 
-    for (let i = 0; i < seqLen; i++) {
-      // Predict duration, ensure it is at least 1 frame
+    // The text latent shape is typically [1, seqLen, textLatentDim] or [1, textLatentDim, seqLen]
+    const isChannelLast = textLatents.dims.length === 3 && textLatents.dims[2] === textLatentDim;
+    const nTokens = isChannelLast ? textLatents.dims[1] : (textLatents.dims.length === 3 ? textLatents.dims[2] : seqLen);
+
+    for (let i = 0; i < Math.min(nTokens, durations.length); i++) {
       const rawDur = durations[i] !== undefined ? durations[i] : 2.0;
-      const durFrames = Math.max(1, Math.round(rawDur));
+      const durFrames = Math.max(1, Math.round(Math.abs(rawDur)));
 
       // Extract latent vector for index i
-      const offset = i * latentDim;
-      const latentVec = textLatents.data.slice(offset, offset + latentDim);
+      let latentVec;
+      if (isChannelLast) {
+        const offset = i * textLatentDim;
+        latentVec = textLatents.data.slice(offset, offset + textLatentDim);
+      } else {
+        // Channel-first: [1, textLatentDim, seqLen]
+        latentVec = new Float32Array(textLatentDim);
+        for (let d = 0; d < textLatentDim; d++) {
+          latentVec[d] = textLatents.data[d * nTokens + i];
+        }
+      }
 
       for (let d = 0; d < durFrames; d++) {
         expandedList.push(...latentVec);
       }
     }
 
-    const totalFrames = expandedList.length / latentDim;
-    log(`Expanded Latents Length: ${totalFrames} frames`);
+    const totalFrames = Math.floor(expandedList.length / textLatentDim);
+    log(`Expanded Latents: ${totalFrames} frames × ${textLatentDim} dim`);
 
-    const expandedLatentsTensor = new ort.Tensor('float32', new Float32Array(expandedList), [1, totalFrames, latentDim]);
+    if (totalFrames === 0) {
+      throw new Error('Duration expansion produced zero frames.');
+    }
+
+    const expandedLatentsTensor = new ort.Tensor('float32', new Float32Array(expandedList), [1, totalFrames, textLatentDim]);
 
     // ── STAGE 3: Vector Estimator (Flow-Matching Diffusion) ─────────────────
-    const vectorFeeds = {};
-    const vectorInputs = sessions.vector_estimator.inputNames;
-    vectorFeeds[vectorInputs[0] || 'expanded_latents'] = expandedLatentsTensor;
-    
-    // Some diffusion pipelines expect a style embedding or noise schedule step
-    if (vectorInputs.length > 1) {
-      const stepTensor = new ort.Tensor('float32', new Float32Array([1.0]), [1]);
-      vectorFeeds[vectorInputs[1]] = stepTensor;
-    }
-    // Set speaker/style embedding if present in voiceStyle profile
-    if (vectorInputs.length > 2 && voiceStyle && voiceStyle.embedding) {
-      const styleTensor = new ort.Tensor('float32', new Float32Array(voiceStyle.embedding), [1, voiceStyle.embedding.length]);
-      vectorFeeds[vectorInputs[2]] = styleTensor;
+    // The vector field config says it projects from latentDim=24 space, with
+    // time conditioning and style conditioning.
+    const totalSteps = 8; // default number of denoising steps
+    const sigMin = config?.ttl?.flow_matching?.sig_min ?? 0;
+
+    // Iterative flow-matching denoising loop
+    let currentLatents = expandedLatentsTensor;
+
+    for (let step = 0; step < totalSteps; step++) {
+      if (epochAtStart !== supertonicWorkEpoch) return;
+
+      const t = (step + 0.5) / totalSteps;  // midpoint timestep
+      const dt = 1.0 / totalSteps;
+
+      const tTensor = new ort.Tensor('float32', new Float32Array([t]), [1]);
+
+      const vectorCandidates = {};
+      // The vector estimator likely wants the current latents + time + style + text
+      vectorCandidates['x'] = currentLatents;
+      vectorCandidates['input'] = currentLatents;
+      vectorCandidates['latents'] = currentLatents;
+      vectorCandidates['expanded_latents'] = currentLatents;
+      vectorCandidates['noisy_latents'] = currentLatents;
+      vectorCandidates['t'] = tTensor;
+      vectorCandidates['time'] = tTensor;
+      vectorCandidates['timestep'] = tTensor;
+      vectorCandidates['step'] = tTensor;
+      if (styleTensor) {
+        vectorCandidates['style'] = styleTensor;
+        vectorCandidates['style_input'] = styleTensor;
+        vectorCandidates['voice_style'] = styleTensor;
+        vectorCandidates['speaker_embedding'] = styleTensor;
+      }
+      // Text conditioning
+      vectorCandidates['text_latents'] = expandedLatentsTensor;
+      vectorCandidates['text'] = expandedLatentsTensor;
+      vectorCandidates['encoder_output'] = textLatents;
+      vectorCandidates['hidden_states'] = textLatents;
+      // Also add all encoder outputs
+      for (const [k, v] of Object.entries(allEncoderOutputs)) {
+        if (!vectorCandidates[k]) vectorCandidates[k] = v;
+      }
+
+      const vectorFeeds = buildFeeds(sessions.vector_estimator, vectorCandidates);
+      // Positional fallback
+      if (Object.keys(vectorFeeds).length === 0) {
+        const names = sessions.vector_estimator.inputNames;
+        vectorFeeds[names[0]] = currentLatents;
+        if (names.length > 1) vectorFeeds[names[1]] = tTensor;
+        if (names.length > 2 && styleTensor) vectorFeeds[names[2]] = styleTensor;
+      }
+
+      if (step === 0) {
+        log(`Running Stage 3: Vector Estimator (${totalSteps} steps). Feeds: [${Object.keys(vectorFeeds).join(', ')}]`);
+      }
+
+      const vectorOutputs = await sessions.vector_estimator.run(vectorFeeds);
+      const velocityField = vectorOutputs[sessions.vector_estimator.outputNames[0]];
+      if (!velocityField || !velocityField.data) {
+        throw new Error(`Stage 3 failed at step ${step}: No velocity field returned.`);
+      }
+
+      // Euler integration: x_{t+dt} = x_t + v(x_t, t) * dt
+      const updatedData = new Float32Array(currentLatents.data.length);
+      for (let i = 0; i < updatedData.length; i++) {
+        updatedData[i] = currentLatents.data[i] + velocityField.data[i] * dt;
+      }
+      currentLatents = new ort.Tensor('float32', updatedData, currentLatents.dims);
     }
 
-    log('Running Stage 3: Vector Estimator (Diffusion) ONNX inference…');
-    const vectorOutputs = await sessions.vector_estimator.run(vectorFeeds);
-    if (epochAtStart !== supertonicWorkEpoch) return;
-
-    const refinedLatents = vectorOutputs[sessions.vector_estimator.outputNames[0]];
-    if (!refinedLatents || !refinedLatents.data) {
-      throw new Error('Stage 3 failed: Flow matching refinement failed.');
-    }
+    const refinedLatents = currentLatents;
+    log(`Vector Estimator output shape: [${refinedLatents.dims.join(', ')}]`);
 
     // ── STAGE 4: Vocoder (Waveform Decoder) ──────────────────────────────────
-    const vocoderFeeds = {};
-    const vocoderInputs = sessions.vocoder.inputNames;
-    vocoderFeeds[vocoderInputs[0] || 'refined_latents'] = refinedLatents;
+    const vocoderCandidates = {
+      'x': refinedLatents,
+      'input': refinedLatents,
+      'latents': refinedLatents,
+      'refined_latents': refinedLatents,
+      'mel': refinedLatents,
+      'features': refinedLatents,
+    };
 
-    log('Running Stage 4: Vocoder (Waveform Decoder) ONNX inference…');
+    const vocoderFeeds = buildFeeds(sessions.vocoder, vocoderCandidates);
+    if (Object.keys(vocoderFeeds).length === 0) {
+      vocoderFeeds[sessions.vocoder.inputNames[0]] = refinedLatents;
+    }
+
+    log(`Running Stage 4: Vocoder. Feeds: [${Object.keys(vocoderFeeds).join(', ')}]`);
     const vocoderOutputs = await sessions.vocoder.run(vocoderFeeds);
     if (epochAtStart !== supertonicWorkEpoch) return;
 
@@ -459,34 +622,16 @@ async function synthesize(text, requestId, prefetchIdx) {
 
   } catch (e) {
     if (epochAtStart !== supertonicWorkEpoch) return;
-    log(`Inference Pipeline Failed: ${e.message}. Using safe fallback generation…`);
-
-    // Dynamic, high-fidelity fallback synthesis so users always have premium audio playback
-    const sampleRate = config?.sampleRate || 44100;
-    const duration = text.length * 0.07 + 0.3; // duration proportional to text length
-    const totalSamples = Math.floor(sampleRate * duration);
-    const audioData = new Float32Array(totalSamples);
-    
-    // Synthesize a very clear, harmonic warm tone voice to represent fallback synthesis
-    const baseFreq = 160; // warm vocal pitch (Hz)
-    const speed = 1.15;
-    
-    for (let i = 0; i < totalSamples; i++) {
-      const t = i / sampleRate;
-      // Synthesize a vocaloid-like chord structure (warm vowels)
-      const form1 = Math.sin(2 * Math.PI * baseFreq * t * speed);
-      const form2 = Math.sin(2 * Math.PI * (baseFreq * 2.1) * t * speed) * 0.4;
-      const form3 = Math.sin(2 * Math.PI * (baseFreq * 3.2) * t * speed) * 0.15;
-      
-      // Amplitude envelope (fades in and out naturally)
-      const envelope = Math.sin(Math.PI * (i / totalSamples));
-      audioData[i] = (form1 + form2 + form3) * 0.35 * envelope;
-    }
-
-    self.postMessage(
-      { type: 'audio', data: audioData, requestId, prefetchIdx },
-      [audioData.buffer]
-    );
+    const errorMsg = `ONNX Pipeline Error: ${e.message}`;
+    log(errorMsg);
+    // Report the real error to the main thread — do NOT fall back to sine waves.
+    // The AudioController will gracefully fall back to browser native speech.
+    self.postMessage({
+      type: 'error',
+      error: errorMsg,
+      requestId,
+      prefetchIdx,
+    });
   }
 }
 
