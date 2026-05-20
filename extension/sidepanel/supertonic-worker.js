@@ -32,7 +32,7 @@ const SUPERTONIC_COMMON_ASSETS = {
     label: 'Vocoder'
   },
   config: {
-    url: 'https://huggingface.co/TensorStack/Supertonic-onnx/resolve/main/tts.json',
+    url: 'https://huggingface.co/TensorStack/Supertonic-onnx/resolve/main/unicode_indexer.json',
     sha256: 'd92a7e7811efbf8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b',
     label: 'Config'
   }
@@ -299,7 +299,7 @@ async function init(data) {
 // ── Simple Character Tokenizer ──────────────────────────────────────────────
 function tokenize(text) {
   // Checks if the configuration has a vocabulary.
-  const vocab = config.vocab || config.characters || {};
+  const vocab = config.vocab || config.characters || config || {};
   const tokenIds = [];
   
   // Standard padding/BOS/EOS if specified
