@@ -1084,7 +1084,7 @@ export class AudioController {
   }
 
   createSuperTonicWorker() {
-    return new Worker(this.browserAPI.runtime.getURL('sidepanel/supertonic-worker.js'));
+    return new Worker(this.browserAPI.runtime.getURL('sidepanel/supertonic-worker.js'), { type: 'module' });
   }
 
   initSuperTonicWorkerInstance(worker, voiceKey) {
@@ -1318,10 +1318,11 @@ export class AudioController {
     if (msg.type === 'audio') {
       const audioSamples = msg.data instanceof Float32Array ? msg.data : new Float32Array(msg.data || []);
       if (audioSamples.length === 0) return;
-      const blob = encodeWAV(audioSamples, this.supertonicSampleRate);
+      const sampleRate = msg.sampleRate || this.supertonicSampleRate;
+      const blob = encodeWAV(audioSamples, sampleRate);
 
       if (msg.prefetchIdx != null) {
-        this.supertonicAudioCache.set(msg.prefetchIdx, { blob, sampleRate: this.supertonicSampleRate });
+        this.supertonicAudioCache.set(msg.prefetchIdx, { blob, sampleRate });
         this.supertonicSynthCompletedCount++;
         if (this.supertonicSynthCompletedCount < this.supertonicSynthTotalCount) {
           if (this.dom.statusLabel) this.dom.statusLabel.textContent = `Synthesizing ${this.supertonicSynthCompletedCount}/${this.supertonicSynthTotalCount}…`;
@@ -1331,14 +1332,14 @@ export class AudioController {
         this.dispatchNextSuperTonicWorker(e.target);
 
         if (msg.prefetchIdx === this.sentenceIdx && this.speaking && !this.currentAudioElement) {
-          this.playFromBlob(blob, this.supertonicSampleRate, 'supertonic');
+          this.playFromBlob(blob, sampleRate, 'supertonic');
         } else if (this.speaking && !this.currentAudioElement && this.supertonicAudioCacheHasBlob(this.sentenceIdx)) {
-          const c = this.supertonicAudioCache.get(this.sentenceIdx);
-          this.playFromBlob(c.blob, c.sampleRate, 'supertonic');
+          const cached = this.supertonicAudioCache.get(this.sentenceIdx);
+          this.playFromBlob(cached.blob, cached.sampleRate, 'supertonic');
         }
       } else {
         if (this.dom.statusLabel) this.dom.statusLabel.textContent = '';
-        this.playFromBlob(blob, this.supertonicSampleRate, 'supertonic');
+        this.playFromBlob(blob, sampleRate, 'supertonic');
       }
     } else if (msg.type === 'error') {
       debugLog('AudioController', `SuperTonic synthesis error: ${msg.error}`);
