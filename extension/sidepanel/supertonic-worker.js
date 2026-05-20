@@ -41,12 +41,12 @@ const SUPERTONIC_COMMON_ASSETS = {
 const SUPERTONIC_VOICE_PROFILES = {
   female1: {
     label: 'Female1 (Standard)',
-    url: 'https://huggingface.co/TensorStack/Supertonic-onnx/resolve/main/Female1.json',
+    url: 'https://huggingface.co/TensorStack/Supertonic-onnx/resolve/main/voice_styles/F1.json',
     sha256: 'e92a7e7811efbf8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b'
   },
   male1: {
     label: 'Male1 (Deep)',
-    url: 'https://huggingface.co/TensorStack/Supertonic-onnx/resolve/main/Male1.json',
+    url: 'https://huggingface.co/TensorStack/Supertonic-onnx/resolve/main/voice_styles/M1.json',
     sha256: 'f92a7e7811efbf8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b'
   }
 };
