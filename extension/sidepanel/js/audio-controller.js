@@ -880,7 +880,7 @@ export class AudioController {
 
   createKokoroWorker() {
     return new Worker(
-      this.browserAPI.runtime.getURL('sidepanel/kokoro-worker.js'),
+      './kokoro-worker.js',
       { type: 'module' }
     );
   }
@@ -992,7 +992,7 @@ export class AudioController {
   }
 
   createPiperWorker() {
-    return new Worker(this.browserAPI.runtime.getURL('sidepanel/piper-worker.js'));
+    return new Worker('./piper-worker.js');
   }
 
   initPiperWorkerInstance(worker, modelKey) {
@@ -1084,7 +1084,7 @@ export class AudioController {
   }
 
   createSuperTonicWorker() {
-    return new Worker(this.browserAPI.runtime.getURL('sidepanel/supertonic-worker.js'), { type: 'module' });
+    return new Worker('./supertonic-worker.js', { type: 'module' });
   }
 
   initSuperTonicWorkerInstance(worker, voiceKey) {
