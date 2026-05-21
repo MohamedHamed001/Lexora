@@ -49,6 +49,18 @@ The extension was born from a simple personal need: I lose focus when I only rea
 
 ## What's New
 
+### v2.0.0 — LEXORA is now Supercharged with SuperTonic!
+
+Lexora has taken a massive leap forward in version 2.0.0, introducing **SuperTonic**, a state-of-the-art, multi-stage, high-fidelity local text-to-speech engine alongside our existing pipelines! Additionally, the entire visual layout has been simplified and rebuilt around brand-new premium segmented controls, discarding all complex model jargon.
+
+#### What's New in v2.0.0:
+- **SuperTonic Neural TTS Engine Integration**: Fully offline, high-fidelity, highly expressive multi-stage local narration running on-device via ONNX Runtime Web.
+- **Premium "Text-to-Speech mode" Interface**: Replaced the technical, complex model dropdown picker with a beautiful, modern horizontal segmented control supporting **Fast** ⚡️ (Piper), **Balanced** ⚖️ (Kokoro), and **Quality** 🏆 (SuperTonic) options, keeping the UI intuitive and non-technical.
+- **Local WASM/JSEP CSP Resolution**: Scoped both Kokoro and SuperTonic web workers to strictly load WebAssembly and JSEP modules from the local extension bundle directory instead of CDNs. This fully complies with strict Chrome Extension Manifest V3 Content Security Policies (CSP) and enables complete offline-first operation.
+- **Simplified Kokoro Engine Configuration**: Defaulted the Kokoro engine exclusively to the high-efficiency Q8 model variant (~92 MB download) and removed the technical `q4` vs `q8` choice to streamline user configuration.
+- **SuperTonic "Howling Sound" Resolution**: Fully replaced the naive char-level tokenizer with the official `unicode_indexer` code-point lookup dictionary, fixed latent dimension alignments, incorporated `attention_mask` tensors, and implemented a proper 8-step flow-matching Euler denoising loop.
+- **Robust Fail-Safe Mechanisms**: Implemented an automated fallback to the native browser `speechSynthesis` API when WebGL/WebGPU or ONNX context is unavailable.
+
 ### v1.7.0
 
 - **Stability**: Fixed capture flow issues that could leave the UI stuck on “Scanning…”.

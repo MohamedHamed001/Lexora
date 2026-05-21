@@ -28,6 +28,30 @@ export function buildPersistedConfig(config, rememberKey) {
 export function initSettings({ audio }) {
   audioCtrl = audio;
   if (!state.browserAPI) return;
+
+  // Segmented Control Sync Logic
+  const segmentBtns = document.querySelectorAll('#gen-mode-control .segment-btn');
+  function updateSegmentButtons(value) {
+    if (!segmentBtns.length) return;
+    segmentBtns.forEach(btn => {
+      if (btn.dataset.value === value) {
+        btn.classList.add('active');
+      } else {
+        btn.classList.remove('active');
+      }
+    });
+  }
+
+  if (segmentBtns.length) {
+    segmentBtns.forEach(btn => {
+      btn.addEventListener('click', () => {
+        if (dom.ttsEngineSelect) {
+          dom.ttsEngineSelect.value = btn.dataset.value;
+          dom.ttsEngineSelect.dispatchEvent(new Event('change'));
+        }
+      });
+    });
+  }
   const K = (globalThis.LexoraStorage && LexoraStorage.KEYS) || {
     CURRENT_LESSON: 'currentLesson',
     CONFIG: 'lexoraConfig',
@@ -156,7 +180,7 @@ export function initSettings({ audio }) {
         state.config.key = sessionKey;
       }
 
-      if (state.config.kokoroDtype !== 'q4' && state.config.kokoroDtype !== 'q8') state.config.kokoroDtype = 'q8';
+      state.config.kokoroDtype = 'q8';
       if (dom.settingUrl) dom.settingUrl.value = state.config.url || '';
       if (dom.settingModel) dom.settingModel.value = state.config.model || '';
       if (dom.settingKey) dom.settingKey.value = state.config.key || '';
@@ -179,10 +203,12 @@ export function initSettings({ audio }) {
     }
     updateStatsUI();
 
-    if (dom.ttsEngineSelect) dom.ttsEngineSelect.value = state.config.ttsEngine || 'kokoro';
-    if (dom.kokoroDtypeSelect) dom.kokoroDtypeSelect.value = state.config.kokoroDtype || 'q8';
+    if (dom.ttsEngineSelect) {
+      const activeEngine = state.config.ttsEngine || 'kokoro';
+      dom.ttsEngineSelect.value = activeEngine;
+      updateSegmentButtons(activeEngine);
+    }
     
-    if (audioCtrl) audioCtrl.updateKokoroDtypeRowVisibility();
     if (audioCtrl) audioCtrl.initVoice();
 
     if (res[K.AUTO_PLAY_SELECTED_TEXT] && state.currentLesson && state.currentLesson.title === 'Selected Text') {
@@ -269,22 +295,12 @@ export function initSettings({ audio }) {
       const val = dom.ttsEngineSelect.value;
       const nextEngine = (val === 'piper' || val === 'supertonic') ? val : 'kokoro';
       state.config.ttsEngine = nextEngine;
+      updateSegmentButtons(nextEngine);
       if (audioCtrl) audioCtrl.cancelAudio(true);
       if (audioCtrl) audioCtrl.showDownloadProgress(false);
 
-      if (audioCtrl) audioCtrl.updateKokoroDtypeRowVisibility();
       persistConfig();
       if (audioCtrl) audioCtrl.initVoice(); // re-init voice when engine changes
-    });
-  }
-
-  if (dom.kokoroDtypeSelect) {
-    dom.kokoroDtypeSelect.addEventListener('change', () => {
-      const next = dom.kokoroDtypeSelect.value === 'q4' ? 'q4' : 'q8';
-      if (next === state.config.kokoroDtype) return;
-      state.config.kokoroDtype = next;
-      if (audioCtrl) audioCtrl.disposeKokoroWorkers();
-      persistConfig();
     });
   }
 }

@@ -73,22 +73,24 @@
     <!-- AUDIO TAB -->
     <div id="audio-panel" class="tab-panel" style="display:none;">
       <h2 style="font-family:var(--font-display);margin-bottom:0.5rem;font-size:1rem;">Audio Narration</h2>
-      <p style="color:var(--text-dim);font-size:0.72rem;margin-bottom:1rem;line-height:1.4;">Choose your local voice engine. <strong>Piper</strong> starts instantly but sounds more synthetic; <strong>Kokoro</strong> is more natural and human‑like, but takes a moment to load; <strong>SuperTonic</strong> offers high-fidelity, expressive local narration.</p>
 
-      <label style="font-size:0.78rem;color:var(--text-dim);display:block;margin-bottom:6px;">Engine:</label>
-      <select id="tts-engine" style="width:100%;padding:8px;border-radius:6px;background:var(--surface-highest);border:1px solid var(--outline-variant);font-family:var(--font-body);font-size:0.8rem;outline:none;margin-bottom:1rem;">
+
+      <div class="gen-mode-row">
+        <span class="gen-mode-label">Text-to-Speech mode</span>
+        <div class="segmented-control" id="gen-mode-control">
+          <button type="button" class="segment-btn" data-value="piper">Fast</button>
+          <button type="button" class="segment-btn" data-value="kokoro">Balanced</button>
+          <button type="button" class="segment-btn" data-value="supertonic">Quality</button>
+        </div>
+      </div>
+
+      <select id="tts-engine" style="position: absolute; opacity: 0; width: 1px; height: 1px; pointer-events: none;">
         <option value="kokoro">Kokoro</option>
         <option value="piper">Piper</option>
         <option value="supertonic">SuperTonic (New)</option>
       </select>
 
-      <div id="kokoro-dtype-row" style="margin-bottom:1rem;">
-        <label style="font-size:0.78rem;color:var(--text-dim);display:block;margin-bottom:6px;">Kokoro model (disk vs speed):</label>
-        <select id="kokoro-dtype" style="width:100%;padding:8px;border-radius:6px;background:var(--surface-highest);border:1px solid var(--outline-variant);font-family:var(--font-body);font-size:0.8rem;outline:none;">
-          <option value="q8">Q8 — smaller download (~92 MB), heavier CPU work</option>
-          <option value="q4">Q4 — larger cache (~300 MB), faster startup &amp; speech</option>
-        </select>
-      </div>
+
 
       <!-- Model download progress -->
       <div id="download-progress" class="download-progress" style="display:none;">

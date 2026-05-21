@@ -7,7 +7,7 @@
  * Voice embeddings are binary .bin files (Float32Array) from HuggingFace.
  * Models are cached by transformers.js in the browser Cache Storage.
  */
-import { pipeline, env } from './transformers.min.js';
+import { pipeline, env, Tensor } from './transformers.min.js';
 
 /** Bumped on cancel — discard synthesis after execution if stale. */
 let supertonicWorkEpoch = 0;
@@ -32,10 +32,24 @@ let initPromise = null;
 let activeVoiceKey = null;
 
 // ── Configure transformers.js for Chrome extension environment ──────────────
+const localDir = self.location.href.substring(
+  0,
+  self.location.href.lastIndexOf("/") + 1
+);
+env.wasmPaths = localDir;
 env.allowLocalModels = false;
 env.useBrowserCache = true;
 // Disable remote code execution (transformers.js v3 feature)
 env.allowRemoteModels = true;
+
+// Force local assets and single-threaded WASM to prevent dynamic imports from CDNs
+if (!env.backends) env.backends = {};
+if (!env.backends.onnx) env.backends.onnx = {};
+if (!env.backends.onnx.wasm) env.backends.onnx.wasm = {};
+env.backends.onnx.wasm.wasmPaths = localDir;
+env.backends.onnx.wasm.numThreads = 1;
+env.backends.onnx.wasm.proxy = false;
+
 
 // ── Logging ─────────────────────────────────────────────────────────────────
 function log(msg) {
@@ -118,8 +132,9 @@ async function init(data) {
         // Warm up with a short utterance to compile WASM kernels
         log('Warming up model…');
         const dummyEmbedding = new Float32Array(1 * 101 * 128);
+        const dummyTensor = new Tensor('float32', dummyEmbedding, [1, 101, 128]);
         await ttsInstance('Hi', {
-          speaker_embeddings: dummyEmbedding,
+          speaker_embeddings: dummyTensor,
           num_inference_steps: 1,
           speed: 1.0,
         });
@@ -170,8 +185,11 @@ async function synthesize(text, requestId, prefetchIdx) {
     const tag = prefetchIdx != null ? `[prefetch ${prefetchIdx}] ` : '';
     log(`${tag}Synthesizing: "${text.substring(0, 50)}…"`);
 
+    const seqLen = Math.floor(embedding.length / 128);
+    const speakerEmbeddingsTensor = new Tensor('float32', embedding, [1, seqLen, 128]);
+
     const output = await ttsInstance(text, {
-      speaker_embeddings: embedding,
+      speaker_embeddings: speakerEmbeddingsTensor,
       num_inference_steps: 8,
       speed: 1.0,
     });

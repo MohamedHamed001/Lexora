@@ -53,8 +53,6 @@ export const dom = {
   voicePicker: document.getElementById('voice-picker'),
   
   // Kokoro specific
-  kokoroDtypeRow: document.getElementById('kokoro-dtype-row'),
-  kokoroDtypeSelect: document.getElementById('kokoro-dtype'),
   downloadProgress: document.getElementById('download-progress'),
   downloadBar: document.getElementById('download-bar'),
   downloadText: document.getElementById('download-text'),

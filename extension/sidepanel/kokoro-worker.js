@@ -13,6 +13,18 @@ const localDir = self.location.href.substring(
   self.location.href.lastIndexOf("/") + 1
 );
 env.wasmPaths = localDir;
+env.allowLocalModels = false;
+env.useBrowserCache = true;
+env.allowRemoteModels = true;
+
+// Force local assets and single-threaded WASM to prevent dynamic imports from CDNs
+if (!env.backends) env.backends = {};
+if (!env.backends.onnx) env.backends.onnx = {};
+if (!env.backends.onnx.wasm) env.backends.onnx.wasm = {};
+env.backends.onnx.wasm.wasmPaths = localDir;
+env.backends.onnx.wasm.numThreads = 1;
+env.backends.onnx.wasm.proxy = false;
+
 
 const MODEL_ID = "onnx-community/Kokoro-82M-v1.0-ONNX";
 const INIT_TIMEOUT_MS = 120_000;

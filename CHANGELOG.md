@@ -2,6 +2,17 @@
 
 All notable changes to this project are recorded here. Extension releases use the version in `extension/manifest.json` and `extension/manifest.firefox.json`.
 
+## [2.0.0] — 2026-05-21
+
+### Phase 4 — SuperTonic Integration, Local WASM/JSEP CSP Alignment, and Premium UI Rebuild
+
+- **SuperTonic Engine**: Implemented on-device multi-stage neural text-to-speech engine running entirely in a classic Web Worker using ONNX Runtime Web.
+- **Robust Tokenization & Denoising**: Resolved the "howling sound" bug by integrating the official `unicode_indexer` vocab dictionary, adding text_encoder inputs/`attention_mask` tensors, and implementing a mathematically complete 8-step flow-matching Euler denoising loop.
+- **Local CSP Resolution**: Configured both Kokoro and SuperTonic workers to load WASM binaries locally, resolving extension CSP violations and allowing complete offline execution.
+- **UI Simplification**: Defaulted Kokoro to the high-efficiency Q8 model variant and removed complex model dropdown selectors.
+- **Premium Interface Controls**: Introduced a horizontal segmented control (Text-to-Speech mode) supporting Fast (Piper), Balanced (Kokoro), and Quality (SuperTonic) options, whilst retaining visually-hidden elements for absolute backwards-compatibility with E2E automation tests.
+- **Reliable Fallbacks**: Engineered an automated client-side fallback to the native Web Speech API (`speechSynthesis`) in the event of local ONNX initialization exceptions.
+
 ## [1.10.0] — 2026-05-09
 
 ### Phase 3 — Content script modularization & highlighter tests

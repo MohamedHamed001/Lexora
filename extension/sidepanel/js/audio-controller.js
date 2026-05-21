@@ -617,10 +617,7 @@ export class AudioController {
     }
   }
 
-  updateKokoroDtypeRowVisibility() {
-    if (!this.dom.kokoroDtypeRow) return;
-    this.dom.kokoroDtypeRow.style.display = this.state.config.ttsEngine === 'kokoro' ? 'block' : 'none';
-  }
+
 
   showDownloadProgress(show) {
     if (this.dom.downloadProgress) {
@@ -875,12 +872,12 @@ export class AudioController {
   }
 
   resolveKokoroDtype() {
-    return this.state.config.kokoroDtype === 'q4' ? 'q4' : 'q8';
+    return 'q8';
   }
 
   createKokoroWorker() {
     return new Worker(
-      './kokoro-worker.js',
+      this.browserAPI.runtime.getURL('sidepanel/kokoro-worker.js'),
       { type: 'module' }
     );
   }
@@ -992,7 +989,7 @@ export class AudioController {
   }
 
   createPiperWorker() {
-    return new Worker('./piper-worker.js');
+    return new Worker(this.browserAPI.runtime.getURL('sidepanel/piper-worker.js'));
   }
 
   initPiperWorkerInstance(worker, modelKey) {
@@ -1084,7 +1081,10 @@ export class AudioController {
   }
 
   createSuperTonicWorker() {
-    return new Worker('./supertonic-worker.js', { type: 'module' });
+    return new Worker(
+      this.browserAPI.runtime.getURL('sidepanel/supertonic-worker.js'),
+      { type: 'module' }
+    );
   }
 
   initSuperTonicWorkerInstance(worker, voiceKey) {

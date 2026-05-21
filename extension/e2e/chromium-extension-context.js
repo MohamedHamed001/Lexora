@@ -21,6 +21,7 @@ export function extensionLaunchArgs(extensionDir) {
 
 export function launchChromiumWithExtension(extensionDir) {
   return chromium.launchPersistentContext('', {
+    headless: false,
     args: extensionLaunchArgs(extensionDir),
   });
 }
